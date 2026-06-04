@@ -99,6 +99,59 @@ camac_archive parse_camac_file(const std::string& file_path) {
     return archive;
 }
 
+double calculate_max_abs(const std::vector<double>& signal) {
+    double max_abs = 0.0;
+
+    for (double value : signal) {
+        const double abs_value = value < 0.0 ? -value : value;
+
+        if (abs_value > max_abs) {
+            max_abs = abs_value;
+        }
+    }
+
+    return max_abs;
+}
+
+double calculate_energy(const std::vector<double>& signal) {
+    double energy = 0.0;
+
+    for (double value : signal) {
+        energy += value * value;
+    }
+
+    return energy;
+}
+
+void export_archive_summary_to_csv(
+    const std::string& output_path,
+    const camac_archive& archive
+) {
+    std::ofstream out(output_path);
+
+    if (!out) {
+        throw std::runtime_error("Could not create CSV file: " + output_path);
+    }
+
+    out << "event_index,ae_max_abs,eme_max_abs,ae_energy,eme_energy\n";
+
+    for (std::size_t event_index = 0; event_index < archive.events.size(); ++event_index) {
+        const auto& event = archive.events[event_index];
+
+        const double ae_max_abs = calculate_max_abs(event.ae_signal);
+        const double eme_max_abs = calculate_max_abs(event.eme_signal);
+
+        const double ae_energy = calculate_energy(event.ae_signal);
+        const double eme_energy = calculate_energy(event.eme_signal);
+
+        out << event_index << ','
+            << ae_max_abs << ','
+            << eme_max_abs << ','
+            << ae_energy << ','
+            << eme_energy << '\n';
+    }
+}
+
 void export_channel_to_csv(
     const std::string& output_path,
     const std::array<std::uint16_t, samples_per_channel>& values

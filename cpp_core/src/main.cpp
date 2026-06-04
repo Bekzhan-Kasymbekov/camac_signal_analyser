@@ -89,12 +89,15 @@ void solve() {
     export_signal_to_csv(ae_signal_path, selected_event.ae_signal);
     export_signal_to_csv(eme_signal_path, selected_event.eme_signal);
 
+    export_archive_summary_to_csv("../../exports/archive_summary.csv", archive);
+
     std::cout << '\n';
     std::cout << "Exported selected event " << selected_event_index << ":\n";
     std::cout << "- exports/event_" << selected_event_index << "_ae_raw.csv\n";
     std::cout << "- exports/event_" << selected_event_index << "_eme_raw.csv\n";
     std::cout << "- exports/event_" << selected_event_index << "_ae_signal.csv\n";
     std::cout << "- exports/event_" << selected_event_index << "_eme_signal.csv\n";
+    std::cout << "- exports/archive_summary.csv\n";
 
 }
 

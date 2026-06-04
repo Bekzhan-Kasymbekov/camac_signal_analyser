@@ -28,3 +28,12 @@ void export_signal_to_csv(
     const std::string& output_path,
     const std::vector<double>& values
 );
+
+double calculate_max_abs(const std::vector<double>& signal);
+
+double calculate_energy(const std::vector<double>& signal);
+
+void export_archive_summary_to_csv(
+    const std::string& output_path,
+    const camac_archive& archive
+);
