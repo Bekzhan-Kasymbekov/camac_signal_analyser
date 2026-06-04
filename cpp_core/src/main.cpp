@@ -17,10 +17,14 @@ void print_first_values(
 }
 
 void solve() {
-    std::string file_path;
+    const std::string sample_data_directory = "../../sample_data/";
 
-    std::cout << "Enter CAMAC binary file path: ";
-    std::cin >> file_path;
+    std::string file_name;
+
+    std::cout << "Enter CAMAC binary file name from sample_data/: ";
+    std::cin >> file_name;
+
+    const std::string file_path = sample_data_directory + file_name;
 
     std::ifstream file(file_path, std::ios::binary);
 
@@ -49,21 +53,49 @@ void solve() {
         return;
     }
 
-    const auto& first_event = archive.events.front();
+    std::size_t selected_event_index = 0;
 
     std::cout << '\n';
-    print_first_values("First 10 raw AE values:", first_event.ae_raw);
+    std::cout << "Enter event index to export, 0 to "
+              << archive.events.size() - 1 << ": ";
+    std::cin >> selected_event_index;
+
+    if (selected_event_index >= archive.events.size()) {
+        throw std::runtime_error("Selected event index is out of range");
+    }
+
+    const auto& selected_event = archive.events[selected_event_index];
 
     std::cout << '\n';
-    print_first_values("First 10 raw EME values:", first_event.eme_raw);
-
-    export_channel_to_csv("../../exports/first_event_ae.csv", first_event.ae_raw);
-    export_channel_to_csv("../../exports/first_event_eme.csv", first_event.eme_raw);
+    std::cout << "Selected event: " << selected_event_index << '\n';
 
     std::cout << '\n';
-    std::cout << "Exported:\n";
-    std::cout << "- exports/first_event_ae.csv\n";
-    std::cout << "- exports/first_event_eme.csv\n";
+    print_first_values("First 10 raw AE values:", selected_event.ae_raw);
+
+    std::cout << '\n';
+    print_first_values("First 10 raw EME values:", selected_event.eme_raw);
+
+    const std::string event_prefix =
+        "../../exports/event_" + std::to_string(selected_event_index);
+
+    const std::string ae_raw_path = event_prefix + "_ae_raw.csv";
+    const std::string eme_raw_path = event_prefix + "_eme_raw.csv";
+    const std::string ae_signal_path = event_prefix + "_ae_signal.csv";
+    const std::string eme_signal_path = event_prefix + "_eme_signal.csv";
+
+    export_channel_to_csv(ae_raw_path, selected_event.ae_raw);
+    export_channel_to_csv(eme_raw_path, selected_event.eme_raw);
+
+    export_signal_to_csv(ae_signal_path, selected_event.ae_signal);
+    export_signal_to_csv(eme_signal_path, selected_event.eme_signal);
+
+    std::cout << '\n';
+    std::cout << "Exported selected event " << selected_event_index << ":\n";
+    std::cout << "- exports/event_" << selected_event_index << "_ae_raw.csv\n";
+    std::cout << "- exports/event_" << selected_event_index << "_eme_raw.csv\n";
+    std::cout << "- exports/event_" << selected_event_index << "_ae_signal.csv\n";
+    std::cout << "- exports/event_" << selected_event_index << "_eme_signal.csv\n";
+
 }
 
 int main() {
