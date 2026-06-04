@@ -1,0 +1,40 @@
+# CMake / C++ build files
+build/
+cpp_core/build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.o
+*.so
+*.a
+*.out
+
+# Executables
+camac_parser
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Data files
+sample_data/*
+!sample_data/.gitkeep
+
+# Exports
+exports/*
+!exports/.gitkeep
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
