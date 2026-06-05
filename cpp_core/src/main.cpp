@@ -35,7 +35,25 @@ void solve() {
     const std::uint64_t file_size = get_file_size(file);
     file.close();
 
-    const camac_archive archive = parse_camac_file(file_path);
+    int format_choice = 0;
+
+    std::cout << "Select encoding format:\n";
+    std::cout << "1. Old format: AE header, EME untouched\n";
+    std::cout << "2. New format: AE and EME timestamps\n";
+    std::cout << "Choice: \n";
+    std::cin >> format_choice;
+
+    camac_encoding_format encoding_format = camac_encoding_format::old_ae_header;
+
+    if (format_choice == 1) {
+        encoding_format = camac_encoding_format::old_ae_header;
+    } else if (format_choice == 2) {
+        encoding_format = camac_encoding_format::new_channel_timestamps;
+    } else {
+        throw std::runtime_error("Invalid encoding format choice");
+    }
+
+    const camac_archive archive = parse_camac_file(file_path, encoding_format);
 
     std::cout << "\n";
     std::cout << "File size: " << file_size << " bytes\n";
@@ -86,8 +104,17 @@ void solve() {
     export_channel_to_csv(ae_raw_path, selected_event.ae_raw);
     export_channel_to_csv(eme_raw_path, selected_event.eme_raw);
 
-    export_signal_to_csv(ae_signal_path, selected_event.ae_signal);
-    export_signal_to_csv(eme_signal_path, selected_event.eme_signal);
+    export_signal_to_csv(
+            ae_signal_path,
+            selected_event.ae_signal,
+            get_ae_metadata_sample_count(encoding_format)
+    );
+
+    export_signal_to_csv(
+            eme_signal_path,
+            selected_event.eme_signal,
+            get_eme_metadata_sample_count(encoding_format)
+    );
 
     export_archive_summary_to_csv("../../exports/archive_summary.csv", archive);
 
