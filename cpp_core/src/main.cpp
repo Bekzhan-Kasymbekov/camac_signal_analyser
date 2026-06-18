@@ -1,9 +1,44 @@
 #include "camac_parser.hpp"
 
+#include <array>
+#include <cstdint>
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
+
+std::string encoding_format_to_string(camac_encoding_format encoding_format) {
+    if (encoding_format == camac_encoding_format::old_ae_header) {
+        return "old_ae_header";
+    }
+
+    if (encoding_format == camac_encoding_format::new_channel_timestamps) {
+        return "new_channel_timestamps";
+    }
+
+    return "auto_detect";
+}
+
+std::string resolve_file_path(const std::string& input_path) {
+    std::ifstream direct_file(input_path, std::ios::binary);
+
+    if (direct_file) {
+        return input_path;
+    }
+
+    const std::string sample_data_path = "../../sample_data/" + input_path;
+
+    std::ifstream sample_data_file(sample_data_path, std::ios::binary);
+
+    if (sample_data_file) {
+        return sample_data_path;
+    }
+
+    throw std::runtime_error(
+        "Could not open file directly or from sample_data/: " + input_path
+    );
+}
 
 void print_first_values(
     const std::string& title,
@@ -17,14 +52,13 @@ void print_first_values(
 }
 
 void solve() {
-    const std::string sample_data_directory = "../../sample_data/";
+    std::string input_path;
 
-    std::string file_name;
+    std::cout << "Enter CAMAC binary file name from sample_data/ or full path: ";
+    std::cin >> input_path;
 
-    std::cout << "Enter CAMAC binary file name from sample_data/: ";
-    std::cin >> file_name;
 
-    const std::string file_path = sample_data_directory + file_name;
+    const std::string file_path = resolve_file_path(input_path);
 
     std::ifstream file(file_path, std::ios::binary);
 
@@ -35,27 +69,15 @@ void solve() {
     const std::uint64_t file_size = get_file_size(file);
     file.close();
 
-    int format_choice = 0;
-
-    std::cout << "Select encoding format:\n";
-    std::cout << "1. Old format: AE header, EME untouched\n";
-    std::cout << "2. New format: AE and EME timestamps\n";
-    std::cout << "Choice: \n";
-    std::cin >> format_choice;
-
-    camac_encoding_format encoding_format = camac_encoding_format::old_ae_header;
-
-    if (format_choice == 1) {
-        encoding_format = camac_encoding_format::old_ae_header;
-    } else if (format_choice == 2) {
-        encoding_format = camac_encoding_format::new_channel_timestamps;
-    } else {
-        throw std::runtime_error("Invalid encoding format choice");
-    }
+    const camac_encoding_format encoding_format =
+        detect_camac_encoding_format(file_path);
 
     const camac_archive archive = parse_camac_file(file_path, encoding_format);
 
     std::cout << "\n";
+    std::cout << "File: " << file_path << '\n';
+    std::cout << "Detected format: "
+              << encoding_format_to_string(encoding_format) << '\n';
     std::cout << "File size: " << file_size << " bytes\n";
     std::cout << "Bytes per event: " << bytes_per_event << " bytes\n";
     std::cout << "Events: " << archive.events.size() << '\n';
@@ -71,21 +93,25 @@ void solve() {
         return;
     }
 
-    std::size_t selected_event_index = 0;
+    std::size_t selected_event_number = 1;
 
     std::cout << '\n';
-    std::cout << "Enter event index to export, 0 to "
-              << archive.events.size() - 1 << ": ";
-    std::cin >> selected_event_index;
+    std::cout << "Enter event number to export, 1 to "
+              << archive.events.size() << ": ";
+    std::cin >> selected_event_number;
 
-    if (selected_event_index >= archive.events.size()) {
-        throw std::runtime_error("Selected event index is out of range");
+    if (
+        selected_event_number < 1 ||
+        selected_event_number > archive.events.size()
+    ) {
+        throw std::runtime_error("Selected event number is out of range");
     }
 
+    const std::size_t selected_event_index = selected_event_number - 1;
     const auto& selected_event = archive.events[selected_event_index];
 
     std::cout << '\n';
-    std::cout << "Selected event: " << selected_event_index << '\n';
+    std::cout << "Selected event: " << selected_event_number << '\n';
 
     std::cout << '\n';
     print_first_values("First 10 raw AE values:", selected_event.ae_raw);
@@ -94,7 +120,7 @@ void solve() {
     print_first_values("First 10 raw EME values:", selected_event.eme_raw);
 
     const std::string event_prefix =
-        "../../exports/event_" + std::to_string(selected_event_index);
+        "../../exports/event_" + std::to_string(selected_event_number);
 
     const std::string ae_raw_path = event_prefix + "_ae_raw.csv";
     const std::string eme_raw_path = event_prefix + "_eme_raw.csv";
@@ -120,10 +146,10 @@ void solve() {
 
     std::cout << '\n';
     std::cout << "Exported selected event " << selected_event_index << ":\n";
-    std::cout << "- exports/event_" << selected_event_index << "_ae_raw.csv\n";
-    std::cout << "- exports/event_" << selected_event_index << "_eme_raw.csv\n";
-    std::cout << "- exports/event_" << selected_event_index << "_ae_signal.csv\n";
-    std::cout << "- exports/event_" << selected_event_index << "_eme_signal.csv\n";
+    std::cout << "- exports/event_" << selected_event_number << "_ae_raw.csv\n";
+    std::cout << "- exports/event_" << selected_event_number << "_eme_raw.csv\n";
+    std::cout << "- exports/event_" << selected_event_number << "_ae_signal.csv\n";
+    std::cout << "- exports/event_" << selected_event_number << "_eme_signal.csv\n";
     std::cout << "- exports/archive_summary.csv\n";
 
 }

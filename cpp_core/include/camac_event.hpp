@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <cstddef>
 #include <vector>
+#include <string>
 
 enum class camac_encoding_format {
+    auto_detect,
     old_ae_header,
     new_channel_timestamps
 };
@@ -32,6 +34,18 @@ inline std::size_t get_eme_metadata_sample_count(camac_encoding_format format) {
 
     return 4;
 }
+
+bool looks_like_old_ae_header(
+    const std::array<std::uint16_t, samples_per_channel>& ae_raw
+);
+
+bool looks_like_new_channel_timestamp(
+    const std::array<std::uint16_t, samples_per_channel>& raw_values
+);
+
+camac_encoding_format detect_camac_encoding_format(
+    const std::string& file_path
+);
 
 constexpr double tact_seconds = 500e-9;
 constexpr double sample_rate_hz = 1.0 / tact_seconds;

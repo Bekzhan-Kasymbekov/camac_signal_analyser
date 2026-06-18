@@ -133,10 +133,92 @@ void assign_relative_event_times(camac_archive& archive) {
     }
 }
 
+bool looks_like_old_ae_header(
+    const std::array<std::uint16_t, samples_per_channel>& ae_raw
+) {
+    return ae_raw[0] == 333 &&
+           ae_raw[1] == 18 &&
+           ae_raw[2] == 500;
+}
+
+bool looks_like_new_channel_timestamp(
+    const std::array<std::uint16_t, samples_per_channel>& raw_values
+) {
+    const std::uint16_t seconds_thousands = raw_values[1];
+    const std::uint16_t seconds_remainder = raw_values[2];
+    const std::uint16_t milliseconds = raw_values[3];
+
+    return seconds_thousands <= 999 &&
+           seconds_remainder <= 999 &&
+           milliseconds <= 999;
+}
+
+camac_encoding_format detect_camac_encoding_format(
+    const std::string& file_path
+) {
+    std::ifstream file(file_path, std::ios::binary);
+
+    if (!file) {
+        throw std::runtime_error("Could not open file: " + file_path);
+    }
+
+    const std::uint64_t file_size = get_file_size(file);
+
+    if (file_size < bytes_per_event) {
+        throw std::runtime_error("File is too small to contain one CAMAC event");
+    }
+
+    if (file_size % bytes_per_event != 0) {
+        throw std::runtime_error(
+            "Invalid file size. File size is not divisible by CAMAC event size."
+        );
+    }
+
+    std::array<std::uint16_t, samples_per_channel> ae_raw{};
+    std::array<std::uint16_t, samples_per_channel> eme_raw{};
+
+    for (std::size_t i = 0; i < samples_per_channel; ++i) {
+        ae_raw[i] = read_uint16_le(file);
+    }
+
+    for (std::size_t i = 0; i < samples_per_channel; ++i) {
+        eme_raw[i] = read_uint16_le(file);
+    }
+
+    if (looks_like_old_ae_header(ae_raw)) {
+        return camac_encoding_format::old_ae_header;
+    }
+
+    const bool ae_has_new_timestamp =
+        looks_like_new_channel_timestamp(ae_raw);
+
+    const bool eme_has_new_timestamp =
+        looks_like_new_channel_timestamp(eme_raw);
+
+    if (ae_has_new_timestamp && eme_has_new_timestamp) {
+        return camac_encoding_format::new_channel_timestamps;
+    }
+
+    throw std::runtime_error(
+        "Could not auto-detect CAMAC encoding format. Please select it manually."
+    );
+}
+
+camac_archive parse_camac_file(const std::string& file_path) {
+    return parse_camac_file(
+        file_path,
+        camac_encoding_format::auto_detect
+    );
+}
+
 camac_archive parse_camac_file(
         const std::string& file_path,
         camac_encoding_format encoding_format
 ) {
+    if (encoding_format == camac_encoding_format::auto_detect) {
+        encoding_format = detect_camac_encoding_format(file_path);
+    }
+
     std::ifstream file(file_path, std::ios::binary);
 
     if (!file) {
@@ -161,6 +243,7 @@ camac_archive parse_camac_file(
         get_eme_metadata_sample_count(encoding_format);
 
     camac_archive archive;
+    archive.encoding_format = encoding_format;
     archive.events.resize(event_count);
 
     for (std::size_t event_index = 0; event_index < event_count; ++event_index) {

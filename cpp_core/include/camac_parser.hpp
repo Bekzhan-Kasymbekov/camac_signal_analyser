@@ -17,6 +17,8 @@ std::vector<double> make_mean_subtracted_signal(
     std::size_t metadata_sample_count
 );
 
+camac_archive parse_camac_file(const std::string& file_path);
+
 camac_archive parse_camac_file(
     const std::string& file_path,
     camac_encoding_format encoding_format
