@@ -2558,10 +2558,10 @@ class FullAnalysisWindow(QMainWindow):
 
         if channel_mode in ("both", "ae"):
             try:
-                ae_b, ae_a, ae_x, ae_y = calculate_b_value_from_amplitudes(
-                    ae_max_abs_values,
-                    min_magnitude,
-                )
+                ae_b, ae_a, ae_x, ae_y, ae_fit_x, ae_fit_y = calculate_b_value_from_amplitudes(
+                ae_max_abs_values,
+                min_magnitude,
+)
 
                 self.pw_b_value.plot(
                     ae_x,
@@ -2569,26 +2569,34 @@ class FullAnalysisWindow(QMainWindow):
                     pen=None,
                     symbol="o",
                     symbolSize=5,
-                    name="AE points",
+                    name="AE selected points",
                 )
 
-                ae_fit_y = ae_a - ae_b * ae_x
-
                 self.pw_b_value.plot(
-                    ae_x,
+                    ae_fit_x,
                     ae_fit_y,
                     pen=pg.mkPen("b", width=2),
-                    name=f"AE fit, b={ae_b:.3f}",
+                    name=f"AE linear fit, b={ae_b:.3f}",
                 )
 
                 result_lines.append(f"<b>AE b-value:</b> {ae_b:.4f}")
+
+                ae_fit_y_for_all_points = np.full_like(ae_y, np.nan, dtype=float)
+
+                for fit_index, fit_x_value in enumerate(ae_fit_x):
+                    matching_indices = np.where(np.isclose(ae_x, fit_x_value))[0]
+
+                    if len(matching_indices) > 0:
+                        ae_fit_y_for_all_points[matching_indices[0]] = ae_fit_y[fit_index]
 
                 self.last_b_value_results["AE"] = {
                     "b_value": ae_b,
                     "a_value": ae_a,
                     "x": ae_x,
                     "y": ae_y,
-                    "fit_y": ae_fit_y,
+                    "fit_y": ae_fit_y_for_all_points,
+                    "fit_x": ae_fit_x,
+                    "fit_y_segment": ae_fit_y,
                     "min_magnitude": min_magnitude,
                 }
 
@@ -2597,7 +2605,7 @@ class FullAnalysisWindow(QMainWindow):
 
         if channel_mode in ("both", "eme"):
             try:
-                eme_b, eme_a, eme_x, eme_y = calculate_b_value_from_amplitudes(
+                eme_b, eme_a, eme_x, eme_y, eme_fit_x, eme_fit_y = calculate_b_value_from_amplitudes(
                     eme_max_abs_values,
                     min_magnitude,
                 )
@@ -2608,26 +2616,34 @@ class FullAnalysisWindow(QMainWindow):
                     pen=None,
                     symbol="x",
                     symbolSize=6,
-                    name="EME points",
+                    name="EME selected points",
                 )
 
-                eme_fit_y = eme_a - eme_b * eme_x
-
                 self.pw_b_value.plot(
-                    eme_x,
+                    eme_fit_x,
                     eme_fit_y,
                     pen=pg.mkPen("r", width=2),
-                    name=f"EME fit, b={eme_b:.3f}",
+                    name=f"EME linear fit, b={eme_b:.3f}",
                 )
 
                 result_lines.append(f"<b>EME b-value:</b> {eme_b:.4f}")
+
+                eme_fit_y_for_all_points = np.full_like(eme_y, np.nan, dtype=float)
+
+                for fit_index, fit_x_value in enumerate(eme_fit_x):
+                    matching_indices = np.where(np.isclose(eme_x, fit_x_value))[0]
+
+                    if len(matching_indices) > 0:
+                        eme_fit_y_for_all_points[matching_indices[0]] = eme_fit_y[fit_index]
 
                 self.last_b_value_results["EME"] = {
                     "b_value": eme_b,
                     "a_value": eme_a,
                     "x": eme_x,
                     "y": eme_y,
-                    "fit_y": eme_fit_y,
+                    "fit_y": eme_fit_y_for_all_points,
+                    "fit_x": eme_fit_x,
+                    "fit_y_segment": eme_fit_y,
                     "min_magnitude": min_magnitude,
                 }
 
