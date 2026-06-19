@@ -1,3 +1,19 @@
+"""
+Главное окно CAMAC Signal Analyser.
+
+Этот файл отвечает за:
+- создание вкладок GUI;
+- хранение текущего состояния загруженного архива;
+- связь между кнопками/полями ввода и функциями анализа;
+- отображение графиков и сообщений пользователю.
+
+Важно:
+- Пользовательские номера импульсов начинаются с 1.
+- Индексы Python начинаются с 0.
+- После CUT/delete текущие номера импульсов перенумеровываются,
+  но original_event_indices хранит исходные индексы из полного архива.
+"""
+
 import os
 from pathlib import Path
 
@@ -6,14 +22,42 @@ import pyqtgraph as pg
 import traceback
 import pyqtgraph.exporters
 
+from constants import (
+    DEFAULT_WAVELET_FREQUENCY_COUNT_ALL,
+    DEFAULT_WAVELET_FREQUENCY_COUNT_SINGLE,
+    DEFAULT_WAVELET_MAX_FREQ,
+    DEFAULT_WAVELET_MIN_FREQ,
+    SAMPLE_INTERVAL_MICROSECONDS,
+    SAMPLE_INTERVAL_MILLISECONDS,
+    SAMPLE_INTERVAL_SECONDS,
+)
+
+from ui.dialogs import ask_confirmation_dialog, show_message_dialog
+
+from analysis.b_value import calculate_b_value_from_amplitudes
+from analysis.wavelet_analysis import (
+        compute_all_events_wavelet_summary,
+        compute_current_event_wavelet,        
+)
+from analysis.signal_metrics import (
+    calculate_energy,
+    calculate_max_abs,
+    calculate_power,
+)
+
+from file_io.csv_exporters import (
+    write_b_value_csv,
+    write_catalog_csv,
+    write_processed_event_csv,
+    write_raw_event_csv,
+    write_wavelet_csv,
+)
+
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
-    QCheckBox,
     QComboBox,
-    QDialogButtonBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -28,13 +72,27 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QSpinBox,
     QTabWidget,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 
-class full_analysis_window(QMainWindow):
+class FullAnalysisWindow(QMainWindow):
+    """
+    Главное окно приложения.
+
+    Класс хранит текущее рабочее состояние архива:
+    - ae_data / eme_data:
+        текущий диапазон после CUT/delete;
+    - original_ae_data / original_eme_data:
+        копия обработанных сигналов сразу после загрузки, нужна для RESET;
+    - original_event_indices:
+        связь текущих импульсов с исходными индексами полного архива;
+    - relative_seconds:
+        относительное время импульсов в текущем диапазоне.
+
+    GUI показывает номера импульсов с 1, но внутри Python используются индексы с 0.
+    """
     def __init__(self) -> None:
         super().__init__()
 
@@ -51,11 +109,24 @@ class full_analysis_window(QMainWindow):
         self.current_index = 0
         self.last_b_value_results = {}
 
-        self.raw_ae_data = []
-        self.raw_eme_data = []
+        # original_ae_data / original_eme_data:
+        # копия обработанных сигналов сразу после загрузки файла.
+        # Нужны для RESET.
+        #
+        # ae_data / eme_data:
+        # текущий рабочий диапазон после CUT/delete.
+        #
+        # Настоящие RAW uint16 данные берутся из:
+        # self.archive.ae_raw(index)
+        # self.archive.eme_raw(index)
+        self.original_ae_data = []
+        self.original_eme_data = []
         self.ae_data = []
         self.eme_data = []
 
+        # Хранит исходные индексы импульсов из полного архива.
+        # Пример: после CUT 100–200 текущий импульс 1 соответствует исходному импульсу 100.
+        # Внутри храним индексы Python с 0, поэтому при показе пользователю добавляем +1.
         self.original_event_indices = np.array([], dtype=int)
         self.relative_seconds = np.array([], dtype=float)
         self.ae_energy = np.array([], dtype=float)
@@ -150,7 +221,7 @@ class full_analysis_window(QMainWindow):
             )
             return
 
-        if len(plot_widget.plotItem.listDataItems()) == 0:
+        if not self.plot_has_exportable_data(plot_widget):
             self.show_message(
                 "Ошибка экспорта",
                 "На выбранном графике нет данных для экспорта.",
@@ -217,6 +288,23 @@ class full_analysis_window(QMainWindow):
             QMessageBox.Information,
         )
 
+    def plot_has_exportable_data(self, plot_widget: pg.PlotWidget) -> bool:
+        """
+        Проверяет, есть ли на графике данные для экспорта.
+
+        Обычные графики PyQtGraph хранят линии как DataItem.
+        Вейвлет-графики используют ImageItem, поэтому listDataItems()
+        для них может быть пустым, хотя изображение на графике есть.
+        """
+        if len(plot_widget.plotItem.listDataItems()) > 0:
+            return True
+
+        for item in plot_widget.plotItem.items:
+            if isinstance(item, pg.ImageItem):
+                return True
+
+        return False
+
     def toggle_ui_state(self, enabled: bool) -> None:
         self.btn_max.setEnabled(enabled)
         self.input_max.setEnabled(enabled)
@@ -239,6 +327,53 @@ class full_analysis_window(QMainWindow):
     def get_event_numbers(self) -> np.ndarray:
         return np.arange(1, self.num_pulses + 1)
 
+    def get_original_event_number(self, event_index: int) -> int:
+        """
+        Возвращает исходный номер импульса для текущего индекса.
+
+        event_index:
+            индекс текущего рабочего диапазона, начиная с 0.
+
+        Возвращаемое значение:
+            пользовательский номер исходного импульса, начиная с 1.
+
+        Пример:
+            после CUT 100–200 текущий импульс 1 имеет event_index = 0,
+            но исходный номер импульса должен быть 100.
+        """
+        if event_index < len(self.original_event_indices):
+            return int(self.original_event_indices[event_index]) + 1
+
+        return event_index + 1
+
+
+    def get_original_event_index(self, event_index: int) -> int:
+        """
+        Возвращает исходный индекс импульса в полном архиве.
+
+        Используется для доступа к настоящим RAW данным:
+            self.archive.ae_raw(original_event_index)
+            self.archive.eme_raw(original_event_index)
+
+        Важно:
+            это Python-индекс, поэтому он начинается с 0.
+        """
+        if event_index < len(self.original_event_indices):
+            return int(self.original_event_indices[event_index])
+
+        return event_index
+
+
+    def get_relative_time(self, event_index: int) -> float:
+        """
+        Возвращает относительное время импульса в текущем рабочем диапазоне.
+
+        Если время недоступно или индекс вне массива времени, возвращает 0.0.
+        """
+        if event_index < len(self.relative_seconds):
+            return float(self.relative_seconds[event_index])
+
+        return 0.0
     def on_accumulation_x_axis_changed(self) -> None:
         if not self.file_loaded:
             return
@@ -282,6 +417,19 @@ class full_analysis_window(QMainWindow):
         start_index: int,
         end_index_exclusive: int,
     ) -> None:
+        """
+        Обрезает текущий рабочий диапазон по индексам Python.
+
+        Диапазон задается как:
+            [start_index, end_index_exclusive)
+
+        Пользователь вводит номера импульсов с 1, но сюда передаются индексы с 0.
+
+        После обрезки:
+        - ae_data / eme_data становятся короче;
+        - original_event_indices тоже обрезается, чтобы сохранить связь с исходным архивом;
+        - relative_seconds пересчитывается от нуля для нового диапазона.
+        """
         self.ae_data = self.ae_data[start_index:end_index_exclusive]
         self.eme_data = self.eme_data[start_index:end_index_exclusive]
 
@@ -323,7 +471,7 @@ class full_analysis_window(QMainWindow):
 
         self.update_accumulation_plot()
         self.load_pulse(1)
-        self.draw_placeholder_stats_and_b_value()
+        self.redraw_analysis_plots()
 
         self.show_message(
             "CUT",
@@ -342,40 +490,13 @@ class full_analysis_window(QMainWindow):
         icon: QMessageBox.Icon = QMessageBox.Information,
         details: str | None = None,
     ) -> None:
-        from PySide6.QtWidgets import QDialog, QTextEdit, QDialogButtonBox
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle(title)
-        dialog.setMinimumWidth(620)
-
-        if details is not None and details.strip() != "":
-            dialog.setMinimumHeight(360)
-        else:
-            dialog.setMinimumHeight(180)
-
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(12)
-
-        text_label = QLabel(text)
-        text_label.setWordWrap(True)
-        text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        text_label.setMinimumWidth(560)
-        text_label.setStyleSheet("font-size: 13px;")
-        layout.addWidget(text_label)
-
-        if details is not None and details.strip() != "":
-            details_box = QTextEdit()
-            details_box.setReadOnly(True)
-            details_box.setPlainText(details)
-            details_box.setMinimumHeight(140)
-            layout.addWidget(details_box)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
-        buttons.accepted.connect(dialog.accept)
-        layout.addWidget(buttons)
-
-        dialog.exec()   
+        show_message_dialog(
+            self,
+            title,
+            text,
+            icon,
+            details,
+        )
 
     def ask_confirmation(
         self,
@@ -384,88 +505,13 @@ class full_analysis_window(QMainWindow):
         yes_text: str = "Да",
         no_text: str = "Нет",
     ) -> bool:
-        from PySide6.QtWidgets import (
-            QDialog,
-            QVBoxLayout,
-            QLabel,
-            QDialogButtonBox,
-            QPushButton,
+        return ask_confirmation_dialog(
+            self,
+            title,
+            text,
+            yes_text,
+            no_text,
         )
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle(title)
-        dialog.setMinimumWidth(520)
-        dialog.setMinimumHeight(220)
-
-        layout = QVBoxLayout(dialog)
-
-        label = QLabel(text)
-        label.setWordWrap(True)
-        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(label)
-
-        buttons = QDialogButtonBox()
-
-        yes_button = QPushButton(yes_text)
-        no_button = QPushButton(no_text)
-
-        buttons.addButton(yes_button, QDialogButtonBox.AcceptRole)
-        buttons.addButton(no_button, QDialogButtonBox.RejectRole)
-
-        yes_button.clicked.connect(dialog.accept)
-        no_button.clicked.connect(dialog.reject)
-
-        layout.addWidget(buttons)
-
-        return dialog.exec() == QDialog.Accepted
-
-    def calculate_b_value_from_amplitudes(
-        self,
-        amplitudes: np.ndarray,
-        min_magnitude: float | None = None,
-    ) -> tuple[float, float, np.ndarray, np.ndarray]:
-        amplitudes = np.asarray(amplitudes, dtype=float)
-        amplitudes = amplitudes[np.isfinite(amplitudes)]
-        amplitudes = amplitudes[amplitudes > 0]
-
-        if len(amplitudes) < 5:
-            raise ValueError("Недостаточно ненулевых амплитуд для расчета B-value.")
-
-        magnitudes = np.log10(amplitudes ** 2)
-
-        if min_magnitude is not None:
-            magnitudes = magnitudes[magnitudes >= min_magnitude]
-
-        if len(magnitudes) < 5:
-            raise ValueError(
-                "После применения минимальной M осталось слишком мало событий."
-            )
-
-        unique_magnitudes = np.sort(np.unique(magnitudes))
-
-        cumulative_counts = np.array(
-            [
-                np.sum(magnitudes >= magnitude)
-                for magnitude in unique_magnitudes
-            ],
-            dtype=float,
-        )
-
-        valid_mask = cumulative_counts > 0
-
-        x = unique_magnitudes[valid_mask]
-        y = np.log10(cumulative_counts[valid_mask])
-
-        if len(x) < 2:
-            raise ValueError("Недостаточно точек для линейной аппроксимации B-value.")
-
-        slope, intercept = np.polyfit(x, y, 1)
-
-        b_value = -float(slope)
-        a_value = float(intercept)
-
-        return b_value, a_value, x, y
-
     # ================= TAB 1: CROPPING / ACCUMULATION =================
 
     def init_tab1(self) -> None:
@@ -748,7 +794,7 @@ class full_analysis_window(QMainWindow):
             return
 
         if self.radio_single_signal.isChecked():
-            self.draw_placeholder_stats_and_b_value()
+            self.redraw_analysis_plots()
 
             self.show_message(
                 "Статистика",
@@ -828,14 +874,14 @@ class full_analysis_window(QMainWindow):
         controls_layout.addWidget(QLabel("Мин. частота, Hz:"))
 
         self.input_wavelet_min_freq = QLineEdit()
-        self.input_wavelet_min_freq.setText("1000")
+        self.input_wavelet_min_freq.setText(str(DEFAULT_WAVELET_MIN_FREQ))
         self.input_wavelet_min_freq.setFixedWidth(100)
         controls_layout.addWidget(self.input_wavelet_min_freq)
 
         controls_layout.addWidget(QLabel("Макс. частота, Hz:"))
 
         self.input_wavelet_max_freq = QLineEdit()
-        self.input_wavelet_max_freq.setText("1000000")
+        self.input_wavelet_max_freq.setText(str(DEFAULT_WAVELET_MAX_FREQ))
         self.input_wavelet_max_freq.setFixedWidth(100)
         controls_layout.addWidget(self.input_wavelet_max_freq)
 
@@ -943,53 +989,23 @@ class full_analysis_window(QMainWindow):
             output_path = output_path.with_suffix(".csv")
 
         try:
-            with open(output_path, "w", encoding="utf-8") as file:
-                file.write(
-                    "event_number,"
-                    "original_event_number,"
-                    "relative_seconds,"
-                    "ae_max_abs,"
-                    "eme_max_abs,"
-                    "ae_max_abs_squared,"
-                    "eme_max_abs_squared,"
-                    "ae_energy,"
-                    "eme_energy\n"
-                )
+            original_event_numbers = [
+                self.get_original_event_number(i)
+                for i in range(self.num_pulses)
+            ]
 
-                for i in range(self.num_pulses):
-                    event_number = i + 1
+            relative_seconds_values = [
+                self.get_relative_time(i)
+                for i in range(self.num_pulses)
+            ]
 
-                    if i < len(self.original_event_indices):
-                        original_event_number = int(self.original_event_indices[i]) + 1
-                    else:
-                        original_event_number = event_number
-
-                    relative_seconds = (
-                        float(self.relative_seconds[i])
-                        if i < len(self.relative_seconds)
-                        else 0.0
-                    )
-
-                    ae_signal = self.ae_data[i]
-                    eme_signal = self.eme_data[i]
-
-                    ae_max_abs = float(np.max(np.abs(ae_signal)))
-                    eme_max_abs = float(np.max(np.abs(eme_signal)))
-
-                    ae_energy = float(np.sum(ae_signal ** 2))
-                    eme_energy = float(np.sum(eme_signal ** 2))
-
-                    file.write(
-                        f"{event_number},"
-                        f"{original_event_number},"
-                        f"{relative_seconds:.6f},"
-                        f"{ae_max_abs:.6f},"
-                        f"{eme_max_abs:.6f},"
-                        f"{ae_max_abs * ae_max_abs:.6f},"
-                        f"{eme_max_abs * eme_max_abs:.6f},"
-                        f"{ae_energy:.6f},"
-                        f"{eme_energy:.6f}\n"
-                    )
+            write_catalog_csv(
+                output_path,
+                self.ae_data,
+                self.eme_data,
+                original_event_numbers,
+                relative_seconds_values,
+            )
 
         except Exception as error:
             self.show_message(
@@ -1012,7 +1028,6 @@ class full_analysis_window(QMainWindow):
             ),
             QMessageBox.Information,
         )
-
 
     def export_current_event(self) -> None:
         if not self.file_loaded:
@@ -1042,11 +1057,7 @@ class full_analysis_window(QMainWindow):
             return
 
         event_number = event_index + 1
-
-        if event_index < len(self.original_event_indices):
-            original_event_number = int(self.original_event_indices[event_index]) + 1
-        else:
-            original_event_number = event_number
+        original_event_number = self.get_original_event_number(event_index)
 
         default_name = f"event_{event_number}_original_{original_event_number}.csv"
 
@@ -1065,41 +1076,13 @@ class full_analysis_window(QMainWindow):
         if output_path.suffix == "":
             output_path = output_path.with_suffix(".csv")
 
-        ae_signal = self.ae_data[event_index]
-        eme_signal = self.eme_data[event_index]
-
-        max_length = max(len(ae_signal), len(eme_signal))
-
         try:
-            with open(output_path, "w", encoding="utf-8") as file:
-                file.write(
-                    "sample_index,"
-                    "time_microseconds,"
-                    "ae_signal,"
-                    "eme_signal\n"
-                )
-
-                for sample_index in range(max_length):
-                    time_microseconds = sample_index * 0.5
-
-                    ae_value = (
-                        f"{float(ae_signal[sample_index]):.6f}"
-                        if sample_index < len(ae_signal)
-                        else ""
-                    )
-
-                    eme_value = (
-                        f"{float(eme_signal[sample_index]):.6f}"
-                        if sample_index < len(eme_signal)
-                        else ""
-                    )
-
-                    file.write(
-                        f"{sample_index},"
-                        f"{time_microseconds:.6f},"
-                        f"{ae_value},"
-                        f"{eme_value}\n"
-                    )
+            write_processed_event_csv(
+                output_path,
+                self.ae_data[event_index],
+                self.eme_data[event_index],
+                SAMPLE_INTERVAL_MICROSECONDS,
+            )
 
         except Exception as error:
             self.show_message(
@@ -1153,12 +1136,9 @@ class full_analysis_window(QMainWindow):
 
         event_number = event_index + 1
 
-        if event_index < len(self.original_event_indices):
-            original_event_number = int(self.original_event_indices[event_index]) + 1
-        else:
-            original_event_number = event_number
-
-        original_event_index = original_event_number - 1
+        event_number = event_index + 1
+        original_event_number = self.get_original_event_number(event_index)
+        original_event_index = self.get_original_event_index(event_index)
 
         default_name = (
             f"event_{event_number}_original_{original_event_number}_raw.csv"
@@ -1189,37 +1169,12 @@ class full_analysis_window(QMainWindow):
                 dtype=np.uint16,
             )
 
-            max_length = max(len(ae_raw), len(eme_raw))
-
-            with open(output_path, "w", encoding="utf-8") as file:
-                file.write(
-                    "sample_index,"
-                    "time_microseconds,"
-                    "ae_raw,"
-                    "eme_raw\n"
-                )
-
-                for sample_index in range(max_length):
-                    time_microseconds = sample_index * 0.5
-
-                    ae_value = (
-                        str(int(ae_raw[sample_index]))
-                        if sample_index < len(ae_raw)
-                        else ""
-                    )
-
-                    eme_value = (
-                        str(int(eme_raw[sample_index]))
-                        if sample_index < len(eme_raw)
-                        else ""
-                    )
-
-                    file.write(
-                        f"{sample_index},"
-                        f"{time_microseconds:.6f},"
-                        f"{ae_value},"
-                        f"{eme_value}\n"
-                    )
+            write_raw_event_csv(
+                output_path,
+                ae_raw,
+                eme_raw,
+                SAMPLE_INTERVAL_MICROSECONDS,
+            )
 
         except Exception as error:
             self.show_message(
@@ -1264,8 +1219,7 @@ class full_analysis_window(QMainWindow):
         estimated_files = self.num_pulses * 2 + 1
 
         if self.num_pulses > 100:
-            reply = QMessageBox.question(
-                self,
+            confirmed = self.ask_confirmation(
                 "Большой экспорт",
                 (
                     "Вы собираетесь экспортировать большой диапазон.\n\n"
@@ -1273,11 +1227,11 @@ class full_analysis_window(QMainWindow):
                     f"Будет создано файлов: {estimated_files}\n\n"
                     "Продолжить?"
                 ),
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                yes_text="Продолжить",
+                no_text="Отмена",
             )
 
-            if reply != QMessageBox.Yes:
+            if not confirmed:
                 return
 
         folder_path = QFileDialog.getExistingDirectory(
@@ -1297,61 +1251,27 @@ class full_analysis_window(QMainWindow):
         try:
             catalog_path = export_folder / "archive_catalog.csv"
 
-            with open(catalog_path, "w", encoding="utf-8") as file:
-                file.write(
-                    "event_number,"
-                    "original_event_number,"
-                    "relative_seconds,"
-                    "ae_max_abs,"
-                    "eme_max_abs,"
-                    "ae_max_abs_squared,"
-                    "eme_max_abs_squared,"
-                    "ae_energy,"
-                    "eme_energy\n"
-                )
+            original_event_numbers = [
+                self.get_original_event_number(i)
+                for i in range(self.num_pulses)
+            ]
 
-                for i in range(self.num_pulses):
-                    event_number = i + 1
+            relative_seconds_values = [
+                self.get_relative_time(i)
+                for i in range(self.num_pulses)
+            ]
 
-                    if i < len(self.original_event_indices):
-                        original_event_number = int(self.original_event_indices[i]) + 1
-                    else:
-                        original_event_number = event_number
-
-                    relative_seconds = (
-                        float(self.relative_seconds[i])
-                        if i < len(self.relative_seconds)
-                        else 0.0
-                    )
-
-                    ae_signal = self.ae_data[i]
-                    eme_signal = self.eme_data[i]
-
-                    ae_max_abs = float(np.max(np.abs(ae_signal)))
-                    eme_max_abs = float(np.max(np.abs(eme_signal)))
-
-                    ae_energy = float(np.sum(ae_signal ** 2))
-                    eme_energy = float(np.sum(eme_signal ** 2))
-
-                    file.write(
-                        f"{event_number},"
-                        f"{original_event_number},"
-                        f"{relative_seconds:.6f},"
-                        f"{ae_max_abs:.6f},"
-                        f"{eme_max_abs:.6f},"
-                        f"{ae_max_abs * ae_max_abs:.6f},"
-                        f"{eme_max_abs * eme_max_abs:.6f},"
-                        f"{ae_energy:.6f},"
-                        f"{eme_energy:.6f}\n"
-                    )
+            write_catalog_csv(
+                catalog_path,
+                self.ae_data,
+                self.eme_data,
+                original_event_numbers,
+                relative_seconds_values,
+            )
 
             for i in range(self.num_pulses):
                 event_number = i + 1
-
-                if i < len(self.original_event_indices):
-                    original_event_number = int(self.original_event_indices[i]) + 1
-                else:
-                    original_event_number = event_number
+                original_event_number = self.get_original_event_number(i)
 
                 processed_path = (
                     export_folder
@@ -1362,8 +1282,30 @@ class full_analysis_window(QMainWindow):
                     / f"event_{event_number}_original_{original_event_number}_raw.csv"
                 )
 
-                self.write_processed_event_csv(processed_path, i)
-                self.write_raw_event_csv(raw_path, i)
+                write_processed_event_csv(
+                    processed_path,
+                    self.ae_data[i],
+                    self.eme_data[i],
+                    SAMPLE_INTERVAL_MICROSECONDS,
+                )
+
+                original_event_index = self.get_original_event_index(i)
+
+                ae_raw = np.array(
+                    self.archive.ae_raw(original_event_index),
+                    dtype=np.uint16,
+                )
+                eme_raw = np.array(
+                    self.archive.eme_raw(original_event_index),
+                    dtype=np.uint16,
+                )
+
+                write_raw_event_csv(
+                    raw_path,
+                    ae_raw,
+                    eme_raw,
+                    SAMPLE_INTERVAL_MICROSECONDS,
+                )
 
         except Exception as error:
             self.show_message(
@@ -1423,46 +1365,11 @@ class full_analysis_window(QMainWindow):
             output_path = output_path.with_suffix(".csv")
 
         try:
-            with open(output_path, "w", encoding="utf-8") as file:
-                file.write(
-                    "channel,"
-                    "b_value,"
-                    "a_value,"
-                    "min_magnitude,"
-                    "event_count_total,"
-                    "point_index,"
-                    "M,"
-                    "log10_cumulative_N,"
-                    "fit_y\n"
-                )
-
-                for channel_name, result in self.last_b_value_results.items():
-                    b_value = float(result["b_value"])
-                    a_value = float(result["a_value"])
-                    min_magnitude = result["min_magnitude"]
-
-                    min_magnitude_text = (
-                        ""
-                        if min_magnitude is None
-                        else f"{float(min_magnitude):.6f}"
-                    )
-
-                    x_values = result["x"]
-                    y_values = result["y"]
-                    fit_values = result["fit_y"]
-
-                    for point_index in range(len(x_values)):
-                        file.write(
-                            f"{channel_name},"
-                            f"{b_value:.6f},"
-                            f"{a_value:.6f},"
-                            f"{min_magnitude_text},"
-                            f"{self.num_pulses},"
-                            f"{point_index + 1},"
-                            f"{float(x_values[point_index]):.6f},"
-                            f"{float(y_values[point_index]):.6f},"
-                            f"{float(fit_values[point_index]):.6f}\n"
-                        )
+            write_b_value_csv(
+                output_path,
+                self.last_b_value_results,
+                self.num_pulses,
+            )
 
         except Exception as error:
             self.show_message(
@@ -1510,56 +1417,18 @@ class full_analysis_window(QMainWindow):
             output_path = output_path.with_suffix(".csv")
 
         try:
-            amplitude = self.last_wavelet_amplitude
-            frequencies = self.last_wavelet_frequencies
+            original_event_numbers = [
+                self.get_original_event_number(i)
+                for i in range(self.num_pulses)
+            ]
 
-            with open(output_path, "w", encoding="utf-8") as file:
-                if self.last_wavelet_time_ms is not None:
-                    time_ms = self.last_wavelet_time_ms
-
-                    file.write(
-                        "frequency_hz,"
-                        "time_ms,"
-                        "log10_wavelet_amplitude\n"
-                    )
-
-                    for freq_index in range(amplitude.shape[0]):
-                        frequency = float(frequencies[freq_index])
-
-                        for time_index in range(amplitude.shape[1]):
-                            file.write(
-                                f"{frequency:.6f},"
-                                f"{float(time_ms[time_index]):.9f},"
-                                f"{float(amplitude[freq_index, time_index]):.9f}\n"
-                            )
-
-                else:
-                    file.write(
-                        "frequency_hz,"
-                        "event_number,"
-                        "original_event_number,"
-                        "log10_wavelet_amplitude\n"
-                    )
-
-                    for freq_index in range(amplitude.shape[0]):
-                        frequency = float(frequencies[freq_index])
-
-                        for event_index in range(amplitude.shape[1]):
-                            event_number = event_index + 1
-
-                            if event_index < len(self.original_event_indices):
-                                original_event_number = (
-                                    int(self.original_event_indices[event_index]) + 1
-                                )
-                            else:
-                                original_event_number = event_number
-
-                            file.write(
-                                f"{frequency:.6f},"
-                                f"{event_number},"
-                                f"{original_event_number},"
-                                f"{float(amplitude[freq_index, event_index]):.9f}\n"
-                            )
+            write_wavelet_csv(
+                output_path,
+                self.last_wavelet_amplitude,
+                self.last_wavelet_frequencies,
+                self.last_wavelet_time_ms,
+                original_event_numbers,
+            )
 
         except Exception as error:
             self.show_message(
@@ -1583,96 +1452,6 @@ class full_analysis_window(QMainWindow):
             QMessageBox.Information,
         )    
 
-    def write_processed_event_csv(
-        self,
-        output_path: Path,
-        event_index: int,
-    ) -> None:
-        ae_signal = self.ae_data[event_index]
-        eme_signal = self.eme_data[event_index]
-
-        max_length = max(len(ae_signal), len(eme_signal))
-
-        with open(output_path, "w", encoding="utf-8") as file:
-            file.write(
-                "sample_index,"
-                "time_microseconds,"
-                "ae_signal,"
-                "eme_signal\n"
-            )
-
-            for sample_index in range(max_length):
-                time_microseconds = sample_index * 0.5
-
-                ae_value = (
-                    f"{float(ae_signal[sample_index]):.6f}"
-                    if sample_index < len(ae_signal)
-                    else ""
-                )
-
-                eme_value = (
-                    f"{float(eme_signal[sample_index]):.6f}"
-                    if sample_index < len(eme_signal)
-                    else ""
-                )
-
-                file.write(
-                    f"{sample_index},"
-                    f"{time_microseconds:.6f},"
-                    f"{ae_value},"
-                    f"{eme_value}\n"
-                )
-
-    def write_raw_event_csv(
-        self,
-        output_path: Path,
-        event_index: int,
-    ) -> None:
-        if event_index < len(self.original_event_indices):
-            original_event_index = int(self.original_event_indices[event_index])
-        else:
-            original_event_index = event_index
-
-        ae_raw = np.array(
-            self.archive.ae_raw(original_event_index),
-            dtype=np.uint16,
-        )
-        eme_raw = np.array(
-            self.archive.eme_raw(original_event_index),
-            dtype=np.uint16,
-        )
-
-        max_length = max(len(ae_raw), len(eme_raw))
-
-        with open(output_path, "w", encoding="utf-8") as file:
-            file.write(
-                "sample_index,"
-                "time_microseconds,"
-                "ae_raw,"
-                "eme_raw\n"
-            )
-
-            for sample_index in range(max_length):
-                time_microseconds = sample_index * 0.5
-
-                ae_value = (
-                    str(int(ae_raw[sample_index]))
-                    if sample_index < len(ae_raw)
-                    else ""
-                )
-
-                eme_value = (
-                    str(int(eme_raw[sample_index]))
-                    if sample_index < len(eme_raw)
-                    else ""
-                )
-
-                file.write(
-                    f"{sample_index},"
-                    f"{time_microseconds:.6f},"
-                    f"{ae_value},"
-                    f"{eme_value}\n"
-                )
     # ================= B-VALUE TAB =================
 
     def init_tab_b_value(self) -> None:
@@ -1748,6 +1527,20 @@ class full_analysis_window(QMainWindow):
     # ================= MAIN LOGIC =================
 
     def open_file_dialog(self) -> None:
+        """
+        Открывает бинарный CAMAC архив через QFileDialog и загружает его через camac_core.
+
+        camac_core сам определяет формат архива:
+        - old_ae_header
+        - new_channel_timestamps
+
+        После загрузки:
+        - сохраняется исходное количество импульсов;
+        - создается рабочий диапазон ae_data / eme_data;
+        - original_event_indices инициализируется как 0..N-1;
+        - обновляются графики и элементы интерфейса.
+        """
+
         file_name, _ = QFileDialog.getOpenFileName(
             self,
             "Открыть бинарный архив CAMAC",
@@ -1777,8 +1570,8 @@ class full_analysis_window(QMainWindow):
                 for i in range(self.num_pulses)
             ]
 
-            self.raw_ae_data = list(self.ae_data)
-            self.raw_eme_data = list(self.eme_data)
+            self.original_ae_data = list(self.ae_data)
+            self.original_eme_data = list(self.eme_data)
 
             self.relative_seconds = np.array(
                 self.archive.relative_seconds(),
@@ -1830,7 +1623,7 @@ class full_analysis_window(QMainWindow):
         self.on_accumulation_x_axis_changed()
 
         self.load_pulse(1)
-        self.draw_placeholder_stats_and_b_value()
+        self.redraw_analysis_plots()
 
         duration_text = "—"
         if len(self.relative_seconds) > 0:
@@ -1849,6 +1642,20 @@ class full_analysis_window(QMainWindow):
         )
 
     def load_pulse(self, event_number: int) -> None:
+        """
+        Загружает выбранный импульс в окно поимпульсного анализа.
+
+        event_number:
+            пользовательский номер импульса, начинается с 1.
+
+        Функция:
+        - переводит event_number в Python index;
+        - рисует AE/EME сигналы;
+        - строит FFT;
+        - считает энергию, мощность и max abs;
+        - показывает исходный номер импульса после CUT/delete;
+        - показывает RAW header preview для проверки парсера.
+        """
         if not self.file_loaded or not self.ae_data:
             return
 
@@ -1866,8 +1673,8 @@ class full_analysis_window(QMainWindow):
         ae_signal = self.ae_data[event_index]
         eme_signal = self.eme_data[event_index]
 
-        ae_time_us = np.arange(len(ae_signal)) * 0.5
-        eme_time_us = np.arange(len(eme_signal)) * 0.5
+        ae_time_us = np.arange(len(ae_signal)) * SAMPLE_INTERVAL_MICROSECONDS
+        eme_time_us = np.arange(len(eme_signal)) * SAMPLE_INTERVAL_MICROSECONDS
 
         self.pw_ae_time.plot(
             ae_time_us,
@@ -1880,7 +1687,7 @@ class full_analysis_window(QMainWindow):
             pen=pg.mkPen("r", width=1.5),
         )
 
-        sample_interval_seconds = 500e-9
+        sample_interval_seconds = SAMPLE_INTERVAL_SECONDS
 
         ae_freqs = np.fft.rfftfreq(
             len(ae_signal),
@@ -1905,28 +1712,17 @@ class full_analysis_window(QMainWindow):
             pen=pg.mkPen("darkRed", width=1.5),
         )
 
-        energy_ae = float(np.sum(ae_signal ** 2))
-        energy_eme = float(np.sum(eme_signal ** 2))
+        energy_ae = calculate_energy(ae_signal)
+        energy_eme = calculate_energy(eme_signal)
 
-        ae_duration_seconds = len(ae_signal) * 500e-9
-        eme_duration_seconds = len(eme_signal) * 500e-9
+        power_ae = calculate_power(ae_signal, SAMPLE_INTERVAL_SECONDS)
+        power_eme = calculate_power(eme_signal, SAMPLE_INTERVAL_SECONDS)
 
-        power_ae = energy_ae / ae_duration_seconds if ae_duration_seconds > 0 else 0.0
-        power_eme = energy_eme / eme_duration_seconds if eme_duration_seconds > 0 else 0.0
+        max_abs_ae = calculate_max_abs(ae_signal)
+        max_abs_eme = calculate_max_abs(eme_signal)
 
-        max_abs_ae = float(np.max(np.abs(ae_signal))) if len(ae_signal) > 0 else 0.0
-        max_abs_eme = float(np.max(np.abs(eme_signal))) if len(eme_signal) > 0 else 0.0
-
-        relative_time = (
-            float(self.relative_seconds[event_index])
-            if event_index < len(self.relative_seconds)
-            else 0.0
-        )
-
-        original_event_number = event_number
-
-        if event_index < len(self.original_event_indices):
-            original_event_number = int(self.original_event_indices[event_index]) + 1
+        relative_time = self.get_relative_time(event_index)
+        original_event_number = self.get_original_event_number(event_index)
 
         self.lbl_stats.setText(
             f"<b>Текущий импульс:</b> {event_number}<br>"
@@ -1942,10 +1738,7 @@ class full_analysis_window(QMainWindow):
 
         if self.lbl_raw_header is not None and self.archive is not None:
             try:
-                original_event_index = event_index
-
-                if event_index < len(self.original_event_indices):
-                    original_event_index = int(self.original_event_indices[event_index])
+                original_event_index = self.get_original_event_index(event_index)
 
                 ae_raw = np.array(
                     self.archive.ae_raw(original_event_index),
@@ -2011,7 +1804,7 @@ class full_analysis_window(QMainWindow):
         self.on_accumulation_x_axis_changed()
 
         self.load_pulse(next_event_number)
-        self.draw_placeholder_stats_and_b_value()
+        self.redraw_analysis_plots()
 
     def update_accumulation_plot(self) -> None:
         self.plot_widget1.clear()
@@ -2024,7 +1817,7 @@ class full_analysis_window(QMainWindow):
         event_numbers = self.get_event_numbers()
 
         ae_energy = np.array(
-            [np.sum(signal ** 2) for signal in self.ae_data],
+            [calculate_energy(signal) for signal in self.ae_data],
             dtype=float,
         )
 
@@ -2263,8 +2056,8 @@ class full_analysis_window(QMainWindow):
         if not self.file_loaded:
             return
 
-        self.ae_data = list(self.raw_ae_data)
-        self.eme_data = list(self.raw_eme_data)
+        self.ae_data = list(self.original_ae_data)
+        self.eme_data = list(self.original_eme_data)
 
         self.relative_seconds = np.array(
             self.archive.relative_seconds(),
@@ -2300,7 +2093,7 @@ class full_analysis_window(QMainWindow):
 
         self.update_accumulation_plot()
         self.load_pulse(1)
-        self.draw_placeholder_stats_and_b_value()
+        self.redraw_analysis_plots()
 
         self.show_message(
             "RESET",
@@ -2310,27 +2103,27 @@ class full_analysis_window(QMainWindow):
 
 
 
-    def draw_placeholder_stats_and_b_value(self) -> None:
+    def redraw_analysis_plots(self) -> None:
         if not self.file_loaded or self.num_pulses == 0:
             return
 
         x = self.get_event_numbers()
 
         ae_energy = np.array(
-            [np.sum(signal ** 2) for signal in self.ae_data],
+            [calculate_energy(signal) for signal in self.ae_data],
             dtype=float,
         )
         eme_energy = np.array(
-            [np.sum(signal ** 2) for signal in self.eme_data],
+            [calculate_energy(signal) for signal in self.eme_data],
             dtype=float,
         )
 
         ae_max = np.array(
-            [np.max(np.abs(signal)) for signal in self.ae_data],
+            [calculate_max_abs(signal) for signal in self.ae_data],
             dtype=float,
         )
         eme_max = np.array(
-            [np.max(np.abs(signal)) for signal in self.eme_data],
+            [calculate_max_abs(signal) for signal in self.eme_data],
             dtype=float,
         )
 
@@ -2368,20 +2161,20 @@ class full_analysis_window(QMainWindow):
             return
 
         ae_energy = np.array(
-            [np.sum(signal ** 2) for signal in self.ae_data],
+            [calculate_energy(signal) for signal in self.ae_data],
             dtype=float,
         )
         eme_energy = np.array(
-            [np.sum(signal ** 2) for signal in self.eme_data],
+            [calculate_energy(signal) for signal in self.eme_data],
             dtype=float,
         )
 
         ae_max = np.array(
-            [np.max(np.abs(signal)) for signal in self.ae_data],
+            [calculate_max_abs(signal) for signal in self.ae_data],
             dtype=float,
         )
         eme_max = np.array(
-            [np.max(np.abs(signal)) for signal in self.eme_data],
+            [calculate_max_abs(signal) for signal in self.eme_data],
             dtype=float,
         )
 
@@ -2437,6 +2230,21 @@ class full_analysis_window(QMainWindow):
         self.draw_b_value_placeholder(ae_energy_windowed, eme_energy_windowed)
 
     def draw_b_value_plot(self) -> None:
+        """
+        Строит B-value по текущему рабочему диапазону.
+
+        Для каждого импульса берется:
+            max_abs = max(abs(signal))
+
+        Затем считается условная магнитуда:
+            M = log10(max_abs^2)
+
+        И строится:
+            log10(N >= M) = a - bM
+
+        Если EME слишком слабый или после min M осталось мало событий,
+        ошибка должна отображаться в label, а не ломать расчет AE.
+        """
         if not self.file_loaded or not self.ae_data:
             return
 
@@ -2483,7 +2291,7 @@ class full_analysis_window(QMainWindow):
 
         if channel_mode in ("both", "ae"):
             try:
-                ae_b, ae_a, ae_x, ae_y = self.calculate_b_value_from_amplitudes(
+                ae_b, ae_a, ae_x, ae_y = calculate_b_value_from_amplitudes(
                     ae_max_abs_values,
                     min_magnitude,
                 )
@@ -2522,7 +2330,7 @@ class full_analysis_window(QMainWindow):
 
         if channel_mode in ("both", "eme"):
             try:
-                eme_b, eme_a, eme_x, eme_y = self.calculate_b_value_from_amplitudes(
+                eme_b, eme_a, eme_x, eme_y = calculate_b_value_from_amplitudes(
                     eme_max_abs_values,
                     min_magnitude,
                 )
@@ -2659,20 +2467,6 @@ class full_analysis_window(QMainWindow):
             )
             return
 
-        try:
-            import pywt
-        except ImportError:
-            self.show_message(
-                "Ошибка",
-                (
-                    "PyWavelets не установлен.\n\n"
-                    "Установите его командой:\n"
-                    "pip install PyWavelets"
-                ),
-                QMessageBox.Warning,
-            )
-            return
-
         if self.pw_wavelet is None:
             return
 
@@ -2718,22 +2512,27 @@ class full_analysis_window(QMainWindow):
             )
             return
 
-        sample_period_seconds = 500e-9
-
-        signal = signal - np.mean(signal)
-
-        frequencies = np.linspace(min_freq, max_freq, 128)
-
         try:
-            central_frequency = pywt.central_frequency(wavelet_name)
-            scales = central_frequency / (frequencies * sample_period_seconds)
-
-            coefficients, calculated_frequencies = pywt.cwt(
+            amplitude, time_ms, calculated_frequencies = compute_current_event_wavelet(
                 signal,
-                scales,
                 wavelet_name,
-                sampling_period=sample_period_seconds,
+                min_freq,
+                max_freq,
+                SAMPLE_INTERVAL_SECONDS,
+                DEFAULT_WAVELET_FREQUENCY_COUNT_SINGLE,
             )
+
+        except ImportError:
+            self.show_message(
+                "Ошибка",
+                (
+                    "PyWavelets не установлен.\n\n"
+                    "Установите его командой:\n"
+                    "pip install PyWavelets"
+                ),
+                QMessageBox.Warning,
+            )
+            return
 
         except Exception as error:
             self.show_message(
@@ -2742,11 +2541,6 @@ class full_analysis_window(QMainWindow):
                 QMessageBox.Warning,
             )
             return
-
-        amplitude = np.abs(coefficients)
-        amplitude = np.log10(amplitude + 1e-12)
-
-        time_ms = np.arange(len(signal)) * 0.5 / 1000.0
 
         self.last_wavelet_amplitude = amplitude
         self.last_wavelet_time_ms = time_ms
@@ -2790,20 +2584,24 @@ class full_analysis_window(QMainWindow):
         self.pw_wavelet.setLabel("left", "Частота", units="Hz")
 
     def draw_wavelet_all_events(self) -> None:
-        try:
-            import pywt
-        except ImportError:
-            self.show_message(
-                "Ошибка",
-                (
-                    "PyWavelets не установлен.\n\n"
-                    "Установите его командой:\n"
-                    "pip install PyWavelets"
-                ),
-                QMessageBox.Warning,
-            )
-            return
+        """
+        Строит вейвлет-сводку для всех импульсов текущего диапазона.
 
+        Для одного импульса можно построить полную скалограмму.
+        Но для всех импульсов это слишком тяжело, поэтому используется сводка:
+
+        - для каждого импульса считается CWT;
+        - амплитуда усредняется по времени;
+        - каждый импульс становится одним вертикальным столбцом;
+        - ось X = номер импульса;
+        - ось Y = частота;
+        - цвет = log10 средней wavelet amplitude.
+
+        Для ускорения используется:
+        - меньше частотных рядов;
+        - downsample сигнала;
+        - progress dialog.
+        """
         channel = self.combo_wavelet_channel.currentData()
         wavelet_name = self.combo_wavelet_name.currentData()
 
@@ -2848,26 +2646,6 @@ class full_analysis_window(QMainWindow):
 
             if not confirmed:
                 return
-        sample_period_seconds = 500e-9
-
-        # For all-events overview, use fewer frequency rows than for one signal.
-        # This makes the calculation much faster.
-        frequency_count = 64
-        frequencies = np.linspace(min_freq, max_freq, frequency_count)
-
-        try:
-            central_frequency = pywt.central_frequency(wavelet_name)
-            scales = central_frequency / (frequencies * sample_period_seconds)
-            calculated_frequencies = (
-                pywt.scale2frequency(wavelet_name, scales) / sample_period_seconds
-            )
-        except Exception as error:
-            self.show_message(
-                "Ошибка вейвлета",
-                f"Не удалось подготовить scales.\n\nОшибка: {repr(error)}",
-                QMessageBox.Warning,
-            )
-            return
 
         progress = QProgressDialog(
             (
@@ -2892,62 +2670,50 @@ class full_analysis_window(QMainWindow):
         progress.show()
         QApplication.processEvents()
 
-        columns = []
+        def update_progress(value: int) -> None:
+            progress.setValue(value)
+            QApplication.processEvents()
+
+        def is_cancelled() -> bool:
+            return progress.wasCanceled()
 
         try:
-            for i, signal in enumerate(signals):
-                if progress.wasCanceled():
-                    progress.close()
-                    return
+            amplitude_matrix, calculated_frequencies = compute_all_events_wavelet_summary(
+                signals,
+                wavelet_name,
+                min_freq,
+                max_freq,
+                SAMPLE_INTERVAL_SECONDS,
+                DEFAULT_WAVELET_FREQUENCY_COUNT_ALL,
+                downsample_step=4,
+                progress_callback=update_progress,
+                cancel_callback=is_cancelled,
+            )
 
-                signal = np.asarray(signal, dtype=float)
-
-                if len(signal) < 10:
-                    column = np.zeros(len(frequencies), dtype=float)
-                    columns.append(column)
-                    progress.setValue(i + 1)
-                    QApplication.processEvents()
-                    continue
-
-                signal = signal - np.mean(signal)
-
-                # Downsample for all-events overview.
-                # Original: ~3072 samples.
-                # After step 4: ~768 samples.
-                # This is enough for overview heatmap and much faster.
-                downsample_step = 4
-                signal = signal[::downsample_step]
-                effective_sample_period = sample_period_seconds * downsample_step
-
-                effective_scales = central_frequency / (
-                    frequencies * effective_sample_period
-                )
-
-                coefficients, _ = pywt.cwt(
-                    signal,
-                    effective_scales,
-                    wavelet_name,
-                    sampling_period=effective_sample_period,
-                )
-
-                amplitude = np.abs(coefficients)
-
-                # One value per frequency for this event.
-                # Mean over time = frequency summary for one impulse.
-                column = np.mean(amplitude, axis=1)
-                columns.append(column)
-
-                if i % 5 == 0:
-                    progress.setValue(i + 1)
-                    QApplication.processEvents()
-
-            progress.setValue(self.num_pulses)
-            QApplication.processEvents()
+        except ImportError:
             progress.close()
+            self.show_message(
+                "Ошибка",
+                (
+                    "PyWavelets не установлен.\n\n"
+                    "Установите его командой:\n"
+                    "pip install PyWavelets"
+                ),
+                QMessageBox.Warning,
+            )
+            return
+
+        except RuntimeError as error:
+            progress.close()
+            self.show_message(
+                "Вейвлет-анализ",
+                str(error),
+                QMessageBox.Warning,
+            )
+            return
 
         except Exception as error:
             progress.close()
-
             self.show_message(
                 "Ошибка вейвлет-анализа",
                 (
@@ -2958,16 +2724,9 @@ class full_analysis_window(QMainWindow):
             )
             return
 
-        if not columns:
-            self.show_message(
-                "Ошибка",
-                "Нет данных для построения вейвлета.",
-                QMessageBox.Warning,
-            )
-            return
-
-        amplitude_matrix = np.array(columns, dtype=float).T
-        amplitude_matrix = np.log10(amplitude_matrix + 1e-12)
+        progress.setValue(self.num_pulses)
+        QApplication.processEvents()
+        progress.close()
 
         self.last_wavelet_amplitude = amplitude_matrix
         self.last_wavelet_time_ms = None
