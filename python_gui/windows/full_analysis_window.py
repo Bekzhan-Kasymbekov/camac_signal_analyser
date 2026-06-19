@@ -22,38 +22,7 @@ import pyqtgraph as pg
 import traceback
 import pyqtgraph.exporters
 
-from constants import (
-    DEFAULT_WAVELET_FREQUENCY_COUNT_ALL,
-    DEFAULT_WAVELET_FREQUENCY_COUNT_SINGLE,
-    DEFAULT_WAVELET_MAX_FREQ,
-    DEFAULT_WAVELET_MIN_FREQ,
-    SAMPLE_INTERVAL_MICROSECONDS,
-    SAMPLE_INTERVAL_MILLISECONDS,
-    SAMPLE_INTERVAL_SECONDS,
-)
-
-from ui.dialogs import ask_confirmation_dialog, show_message_dialog
-
-from analysis.b_value import calculate_b_value_from_amplitudes
-from analysis.wavelet_analysis import (
-        compute_all_events_wavelet_summary,
-        compute_current_event_wavelet,        
-)
-from analysis.signal_metrics import (
-    calculate_energy,
-    calculate_max_abs,
-    calculate_power,
-)
-
-from file_io.csv_exporters import (
-    write_b_value_csv,
-    write_catalog_csv,
-    write_processed_event_csv,
-    write_raw_event_csv,
-    write_wavelet_csv,
-)
-
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -76,6 +45,50 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from constants import (
+    DEFAULT_WAVELET_FREQUENCY_COUNT_ALL,
+    DEFAULT_WAVELET_FREQUENCY_COUNT_SINGLE,
+    DEFAULT_WAVELET_MAX_FREQ,
+    DEFAULT_WAVELET_MIN_FREQ,
+    SAMPLE_INTERVAL_MICROSECONDS,
+    SAMPLE_INTERVAL_MILLISECONDS,
+    SAMPLE_INTERVAL_SECONDS,
+)
+
+from ui.dialogs import ask_confirmation_dialog, show_message_dialog
+
+from analysis.fft_analysis import compute_mean_fft_amplitude
+from analysis.b_value import calculate_b_value_from_amplitudes
+from analysis.wavelet_analysis import (
+        compute_all_events_wavelet_summary,
+        compute_current_event_wavelet,        
+)
+from analysis.signal_metrics import (
+    calculate_energy,
+    calculate_max_abs,
+    calculate_power,
+)
+from analysis.statistical_values import (
+    amplitudes_from_signals,
+    calculate_d_values_by_windows,
+    calculate_d_values_from_signals,
+    calculate_gamma_value_from_amplitudes,
+    calculate_gamma_values_by_windows,
+    calculate_s_value_from_amplitudes,
+    calculate_s_values_by_windows,
+    calculate_tsallis_parameters_from_amplitudes,
+    calculate_tsallis_q_values_by_windows,
+)
+
+from file_io.csv_exporters import (
+    write_b_value_csv,
+    write_catalog_csv,
+    write_processed_event_csv,
+    write_raw_event_csv,
+    write_wavelet_csv,
+)
+
+from workers.statistics_worker import StatisticsWorker
 
 class FullAnalysisWindow(QMainWindow):
     """
@@ -148,6 +161,10 @@ class FullAnalysisWindow(QMainWindow):
         self.last_wavelet_time_ms = None
         self.last_wavelet_frequencies = None
         self.last_wavelet_channel_title = ""
+
+        self.statistics_thread = None
+        self.statistics_worker = None
+        self.statistics_progress = None
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -374,6 +391,26 @@ class FullAnalysisWindow(QMainWindow):
             return float(self.relative_seconds[event_index])
 
         return 0.0
+
+    def calculate_total_energies(self) -> tuple[float, float]:
+        """
+        Возвращает сумму энергий всех импульсов текущего рабочего диапазона.
+
+        После CUT/delete считаются только оставшиеся импульсы.
+        RESET восстанавливает полный диапазон.
+        """
+        total_ae_energy = sum(
+            calculate_energy(signal)
+            for signal in self.ae_data
+        )
+
+        total_eme_energy = sum(
+            calculate_energy(signal)
+            for signal in self.eme_data
+        )
+
+        return float(total_ae_energy), float(total_eme_energy)
+
     def on_accumulation_x_axis_changed(self) -> None:
         if not self.file_loaded:
             return
@@ -471,7 +508,8 @@ class FullAnalysisWindow(QMainWindow):
 
         self.update_accumulation_plot()
         self.load_pulse(1)
-        self.redraw_analysis_plots()
+        self.clear_statistics_plots()
+        self.update_fft_summary_plot()
 
         self.show_message(
             "CUT",
@@ -589,10 +627,11 @@ class FullAnalysisWindow(QMainWindow):
         main_layout.addLayout(left_panel, stretch=1)
 
         self.plot_widget1 = pg.PlotWidget(
-            title="Окно 1: Накопление АЭ во времени"
+            title="Окно 1: Накопление энергии АЭ и ЭМЕ"
         )
         self.setup_graph_context_menu(self.plot_widget1)
-        self.plot_widget1.setLabel("left", "Накопленная энергия АЭ")
+        self.plot_widget1.setLabel("left", "Накопленная энергия")
+        self.plot_widget1.addLegend()
         self.plot_widget1.setLabel("bottom", "Номер импульса")
         self.plot_widget1.showGrid(x=True, y=True)
 
@@ -634,6 +673,9 @@ class FullAnalysisWindow(QMainWindow):
         self.pw_eme_time = pg.PlotWidget(title="Форма сигнала ЭМЭ")
         self.pw_ae_fft = pg.PlotWidget(title="Амплитудный спектр АЭ")
         self.pw_eme_fft = pg.PlotWidget(title="Амплитудный спектр ЭМЭ")
+        self.pw_fft_summary = pg.PlotWidget(
+            title="Сводная АЧХ / FFT для всех импульсов"
+        )
 
         self.pw_ae_time.setLabel("bottom", "Время", units="us")
         self.pw_eme_time.setLabel("bottom", "Время", units="us")
@@ -644,6 +686,10 @@ class FullAnalysisWindow(QMainWindow):
         self.pw_eme_time.setLabel("left", "EME")
         self.pw_ae_fft.setLabel("left", "Амплитуда")
         self.pw_eme_fft.setLabel("left", "Амплитуда")
+
+        self.pw_fft_summary.setLabel("bottom", "Частота", units="Hz")
+        self.pw_fft_summary.setLabel("left", "Средняя амплитуда FFT")
+        self.pw_fft_summary.addLegend()
 
         for i, plot_widget in enumerate(
             [
@@ -656,6 +702,10 @@ class FullAnalysisWindow(QMainWindow):
             self.setup_graph_context_menu(plot_widget)
             plot_widget.showGrid(x=True, y=True)
             grid_layout.addWidget(plot_widget, i // 2, i % 2)
+
+        self.setup_graph_context_menu(self.pw_fft_summary)
+        self.pw_fft_summary.showGrid(x=True, y=True)
+        grid_layout.addWidget(self.pw_fft_summary, 2, 0, 1, 2)
 
         main_layout.addLayout(grid_layout, stretch=3)
 
@@ -692,7 +742,9 @@ class FullAnalysisWindow(QMainWindow):
             "<b>Max abs АЭ:</b> —<br><br>"
             "<b>Энергия ЭМЭ:</b> —<br>"
             "<b>Мощность ЭМЭ:</b> —<br>"
-            "<b>Max abs ЭМЭ:</b> —"
+            "<b>Max abs ЭМЭ:</b> —<br><br>"
+            "<b>Сумма энергий АЭ:</b> —<br>"
+            "<b>Сумма энергий ЭМЭ:</b> —"
         )
         control_panel.addWidget(self.lbl_stats)
 
@@ -715,26 +767,29 @@ class FullAnalysisWindow(QMainWindow):
 
         grid_layout = QGridLayout()
 
-        self.pw_d_ae = pg.PlotWidget(title="d-value АЭ")
-        self.pw_d_eme = pg.PlotWidget(title="d-value ЭМЭ")
-        self.pw_s_ae = pg.PlotWidget(title="S-value АЭ")
-        self.pw_s_eme = pg.PlotWidget(title="S-value ЭМЭ")
-        self.pw_tsallis_ae = pg.PlotWidget(title="Параметр Тсаллиса q АЭ")
-        self.pw_tsallis_eme = pg.PlotWidget(title="Параметр Тсаллиса q ЭМЭ")
+        self.pw_d_value = pg.PlotWidget(title="d-value")
+        self.pw_s_value = pg.PlotWidget(title="S-value")
+        self.pw_gamma_value = pg.PlotWidget(title="γ-value")
+        self.pw_tsallis_q = pg.PlotWidget(title="Параметр Тсаллиса q")
 
         self.stat_plots = [
-            self.pw_d_ae,
-            self.pw_d_eme,
-            self.pw_s_ae,
-            self.pw_s_eme,
-            self.pw_tsallis_ae,
-            self.pw_tsallis_eme,
+            self.pw_d_value,
+            self.pw_s_value,
+            self.pw_gamma_value,
+            self.pw_tsallis_q,
         ]
-
+        
         for i, plot_widget in enumerate(self.stat_plots):
             self.setup_graph_context_menu(plot_widget)
             plot_widget.showGrid(x=True, y=True)
+            plot_widget.addLegend()
+            plot_widget.setLabel("bottom", "Номер импульса")
             grid_layout.addWidget(plot_widget, i // 2, i % 2)
+
+        self.pw_d_value.setLabel("left", "d-value")
+        self.pw_s_value.setLabel("left", "S-value")
+        self.pw_gamma_value.setLabel("left", "γ")
+        self.pw_tsallis_q.setLabel("left", "q")
 
         main_layout.addLayout(grid_layout, stretch=3)
 
@@ -793,13 +848,18 @@ class FullAnalysisWindow(QMainWindow):
             )
             return
 
-        if self.radio_single_signal.isChecked():
-            self.redraw_analysis_plots()
-
+        if self.statistics_thread is not None:
             self.show_message(
                 "Статистика",
-                "Расчет выполнен для режима: 1 сигнал за раз.",
-                QMessageBox.Information,
+                "Расчет статистики уже выполняется. Дождитесь завершения.",
+                QMessageBox.Warning,
+            )
+            return
+
+        if self.radio_single_signal.isChecked():
+            self.start_statistics_worker(
+                mode="single",
+                window_size=None,
             )
             return
 
@@ -829,17 +889,102 @@ class FullAnalysisWindow(QMainWindow):
             )
             return
 
-        self.draw_jumping_window_stats(window_size)
+        self.start_statistics_worker(
+            mode="window",
+            window_size=window_size,
+        )
+
+    def start_statistics_worker(
+        self,
+        mode: str,
+        window_size: int | None,
+    ) -> None:
+        """
+        Запускает расчет окна 3 в отдельном QThread.
+
+        Это нужно, чтобы тяжелые расчеты d-value и Tsallis q не блокировали
+        основной GUI поток и не вызывали системное сообщение
+        'python3 is not responding'.
+        """
+        progress_text = "Расчет статистических коэффициентов..."
+
+        if mode == "window":
+            progress_text = (
+                "Расчет статистических коэффициентов по окнам...\n\n"
+                f"Размер окна: {window_size}"
+            )
+
+        self.statistics_progress = QProgressDialog(
+            progress_text,
+            "",
+            0,
+            0,
+            self,
+        )
+        self.statistics_progress.setWindowTitle("Окно 3: Статистика")
+        self.statistics_progress.setWindowModality(Qt.WindowModal)
+        self.statistics_progress.setMinimumWidth(520)
+        self.statistics_progress.setMinimumDuration(0)
+        self.statistics_progress.setCancelButton(None)
+        self.statistics_progress.show()
+
+        self.btn_calc_stats.setEnabled(False)
+
+        self.statistics_thread = QThread(self)
+        self.statistics_worker = StatisticsWorker(
+            self.ae_data,
+            self.eme_data,
+            mode,
+            window_size,
+        )
+
+        self.statistics_worker.moveToThread(self.statistics_thread)
+
+        self.statistics_thread.started.connect(self.statistics_worker.run)
+        self.statistics_worker.finished.connect(self.on_statistics_finished)
+        self.statistics_worker.failed.connect(self.on_statistics_failed)
+
+        self.statistics_worker.finished.connect(self.statistics_thread.quit)
+        self.statistics_worker.failed.connect(self.statistics_thread.quit)
+
+        self.statistics_thread.finished.connect(self.statistics_worker.deleteLater)
+        self.statistics_thread.finished.connect(self.statistics_thread.deleteLater)
+        self.statistics_thread.finished.connect(self.cleanup_statistics_worker)
+
+        self.statistics_thread.start()
+
+    def cleanup_statistics_worker(self) -> None:
+        """
+        Очищает ссылки после завершения фонового расчета.
+        """
+        self.statistics_thread = None
+        self.statistics_worker = None
+
+        if self.statistics_progress is not None:
+            self.statistics_progress.close()
+            self.statistics_progress = None
+
+        self.btn_calc_stats.setEnabled(True)
+
+    def on_statistics_failed(self, error_text: str) -> None:
+        self.show_message(
+            "Ошибка статистики",
+            "Не удалось рассчитать статистические коэффициенты.",
+            QMessageBox.Critical,
+            details=error_text,
+        )
+
+    def on_statistics_finished(self, result: dict) -> None:
+        if result["mode"] == "single":
+            self.draw_statistics_single_result(result)
+        else:
+            self.draw_statistics_window_result(result)
 
         self.show_message(
             "Статистика",
-            (
-                "Расчет выполнен для прыгающего скользящего окна.\n\n"
-                f"Размер окна: {window_size}"
-            ),
+            "Расчет статистических коэффициентов выполнен.",
             QMessageBox.Information,
         )
-
         # ================= TAB 4: WAVELETS =================
 
     def init_tab4(self) -> None:
@@ -1623,7 +1768,8 @@ class FullAnalysisWindow(QMainWindow):
         self.on_accumulation_x_axis_changed()
 
         self.load_pulse(1)
-        self.redraw_analysis_plots()
+        self.clear_statistics_plots()
+        self.update_fft_summary_plot()
 
         duration_text = "—"
         if len(self.relative_seconds) > 0:
@@ -1721,6 +1867,8 @@ class FullAnalysisWindow(QMainWindow):
         max_abs_ae = calculate_max_abs(ae_signal)
         max_abs_eme = calculate_max_abs(eme_signal)
 
+        total_ae_energy, total_eme_energy = self.calculate_total_energies()
+
         relative_time = self.get_relative_time(event_index)
         original_event_number = self.get_original_event_number(event_index)
 
@@ -1733,7 +1881,9 @@ class FullAnalysisWindow(QMainWindow):
             f"<b>Max abs АЭ:</b> {max_abs_ae:.2f}<br><br>"
             f"<b>Энергия ЭМЭ:</b> {energy_eme:.2f} у.е.<br>"
             f"<b>Мощность ЭМЭ:</b> {power_eme:.2f} у.е./с<br>"
-            f"<b>Max abs ЭМЭ:</b> {max_abs_eme:.2f}"
+            f"<b>Max abs ЭМЭ:</b> {max_abs_eme:.2f}<br><br>"
+            f"<b>Сумма энергий АЭ:</b> {total_ae_energy:.2f} у.е.<br>"
+            f"<b>Сумма энергий ЭМЭ:</b> {total_eme_energy:.2f} у.е."
         )
 
         if self.lbl_raw_header is not None and self.archive is not None:
@@ -1804,12 +1954,62 @@ class FullAnalysisWindow(QMainWindow):
         self.on_accumulation_x_axis_changed()
 
         self.load_pulse(next_event_number)
-        self.redraw_analysis_plots()
+        self.clear_statistics_plots()
+        self.update_fft_summary_plot()
+
+    def update_fft_summary_plot(self) -> None:
+        """
+        Обновляет сводную АЧХ для всех импульсов текущего рабочего диапазона.
+
+        После CUT/delete используются только оставшиеся импульсы.
+        На одном графике отображаются средние FFT amplitude для АЭ и ЭМЭ.
+        """
+        self.pw_fft_summary.clear()
+
+        if not self.file_loaded or not self.ae_data or not self.eme_data:
+            return
+
+        try:
+            ae_freqs, ae_mean_fft = compute_mean_fft_amplitude(
+                self.ae_data,
+                SAMPLE_INTERVAL_SECONDS,
+            )
+
+            eme_freqs, eme_mean_fft = compute_mean_fft_amplitude(
+                self.eme_data,
+                SAMPLE_INTERVAL_SECONDS,
+            )
+
+        except Exception:
+            return
+
+        self.pw_fft_summary.plot(
+            ae_freqs,
+            ae_mean_fft,
+            pen=pg.mkPen("b", width=2),
+            name="АЭ",
+        )
+
+        self.pw_fft_summary.plot(
+            eme_freqs,
+            eme_mean_fft,
+            pen=pg.mkPen("r", width=2),
+            name="ЭМЭ",
+        )
 
     def update_accumulation_plot(self) -> None:
+        """
+        Обновляет график накопленной энергии для текущего рабочего диапазона.
+
+        В одном графическом окне отображаются две кривые:
+        - накопленная энергия АЭ;
+        - накопленная энергия ЭМЭ.
+
+        После CUT/delete используются только оставшиеся импульсы.
+        """
         self.plot_widget1.clear()
 
-        if not self.file_loaded or not self.ae_data:
+        if not self.file_loaded or not self.ae_data or not self.eme_data:
             self.plot_widget1.addItem(self.line_min)
             self.plot_widget1.addItem(self.line_max)
             return
@@ -1821,11 +2021,20 @@ class FullAnalysisWindow(QMainWindow):
             dtype=float,
         )
 
+        eme_energy = np.array(
+            [calculate_energy(signal) for signal in self.eme_data],
+            dtype=float,
+        )
+
         cumulative_ae_energy = np.cumsum(ae_energy)
+        cumulative_eme_energy = np.cumsum(eme_energy)
 
         x_axis_mode = self.combo_accumulation_x_axis.currentData()
 
-        if x_axis_mode == "relative_time" and len(self.relative_seconds) == self.num_pulses:
+        if (
+            x_axis_mode == "relative_time"
+            and len(self.relative_seconds) == self.num_pulses
+        ):
             x_values = self.relative_seconds
             self.plot_widget1.setLabel("bottom", "Время архива", units="s")
         else:
@@ -1836,6 +2045,14 @@ class FullAnalysisWindow(QMainWindow):
             x_values,
             cumulative_ae_energy,
             pen=pg.mkPen("b", width=2.5),
+            name="АЭ",
+        )
+
+        self.plot_widget1.plot(
+            x_values,
+            cumulative_eme_energy,
+            pen=pg.mkPen("r", width=2.5),
+            name="ЭМЭ",
         )
 
         self.plot_widget1.addItem(self.line_min)
@@ -2093,7 +2310,8 @@ class FullAnalysisWindow(QMainWindow):
 
         self.update_accumulation_plot()
         self.load_pulse(1)
-        self.redraw_analysis_plots()
+        self.clear_statistics_plots()
+        self.update_fft_summary_plot()
 
         self.show_message(
             "RESET",
@@ -2101,133 +2319,182 @@ class FullAnalysisWindow(QMainWindow):
             QMessageBox.Information,
         )
 
+    def clear_statistics_plots(self) -> None:
+        """
+        Очищает графики окна 3 после загрузки, CUT/delete или RESET.
 
-
-    def redraw_analysis_plots(self) -> None:
-        if not self.file_loaded or self.num_pulses == 0:
+        Статистические коэффициенты могут считаться долго, особенно d-value
+        и Tsallis q. Поэтому они пересчитываются только по кнопке
+        "Рассчитать", а не автоматически при каждом изменении данных.
+        """
+        if not hasattr(self, "stat_plots"):
             return
 
-        x = self.get_event_numbers()
+        for plot_widget in self.stat_plots:
+            plot_widget.clear()
+            plot_widget.addLegend()
+            plot_widget.setLabel("bottom", "Номер импульса")
 
-        ae_energy = np.array(
-            [calculate_energy(signal) for signal in self.ae_data],
-            dtype=float,
-        )
-        eme_energy = np.array(
-            [calculate_energy(signal) for signal in self.eme_data],
-            dtype=float,
-        )
+        self.pw_d_value.setTitle("d-value")
+        self.pw_s_value.setTitle("S-value")
+        self.pw_gamma_value.setTitle("γ-value")
+        self.pw_tsallis_q.setTitle("Параметр Тсаллиса q")
 
-        ae_max = np.array(
-            [calculate_max_abs(signal) for signal in self.ae_data],
-            dtype=float,
-        )
-        eme_max = np.array(
-            [calculate_max_abs(signal) for signal in self.eme_data],
-            dtype=float,
-        )
+        self.pw_d_value.setLabel("left", "d")
+        self.pw_s_value.setLabel("left", "S")
+        self.pw_gamma_value.setLabel("left", "γ")
+        self.pw_tsallis_q.setLabel("left", "q")
 
-        self.pw_d_ae.clear()
-        self.pw_d_eme.clear()
-        self.pw_s_ae.clear()
-        self.pw_s_eme.clear()
-        self.pw_tsallis_ae.clear()
-        self.pw_tsallis_eme.clear()
+    def reset_statistics_plot_titles(self) -> None:
+        self.pw_d_value.setTitle("d-value")
+        self.pw_s_value.setTitle("S-value")
+        self.pw_gamma_value.setTitle("γ-value")
+        self.pw_tsallis_q.setTitle("Параметр Тсаллиса q")
 
-        self.pw_d_ae.plot(x, ae_max, pen=pg.mkPen("b", width=1.5))
-        self.pw_d_eme.plot(x, eme_max, pen=pg.mkPen("r", width=1.5))
+        self.pw_d_value.setLabel("left", "d")
+        self.pw_s_value.setLabel("left", "S")
+        self.pw_gamma_value.setLabel("left", "γ")
+        self.pw_tsallis_q.setLabel("left", "q")
 
-        self.pw_s_ae.plot(x, ae_energy, pen=pg.mkPen("b", width=1.5))
-        self.pw_s_eme.plot(x, eme_energy, pen=pg.mkPen("r", width=1.5))
+        for plot_widget in self.stat_plots:
+            plot_widget.setLabel("bottom", "Номер импульса")
 
-        cumulative_ae = np.cumsum(ae_energy)
-        cumulative_eme = np.cumsum(eme_energy)
+    def clear_statistics_plot_items(self) -> None:
+        self.pw_d_value.clear()
+        self.pw_s_value.clear()
+        self.pw_gamma_value.clear()
+        self.pw_tsallis_q.clear()
 
-        self.pw_tsallis_ae.plot(
+        self.pw_d_value.addLegend()
+        self.pw_s_value.addLegend()
+        self.pw_gamma_value.addLegend()
+        self.pw_tsallis_q.addLegend()
+
+        self.reset_statistics_plot_titles()
+
+    def draw_statistics_single_result(self, result: dict) -> None:
+        x = result["x"]
+
+        self.clear_statistics_plot_items()
+
+        self.pw_d_value.plot(
             x,
-            cumulative_ae,
+            result["ae_d_values"],
             pen=pg.mkPen("b", width=1.5),
+            name="АЭ",
         )
-        self.pw_tsallis_eme.plot(
+        self.pw_d_value.plot(
             x,
-            cumulative_eme,
+            result["eme_d_values"],
             pen=pg.mkPen("r", width=1.5),
+            name="ЭМЭ",
         )
 
-        self.draw_b_value_plot()
-    
-    def draw_jumping_window_stats(self, window_size: int) -> None:
-        if not self.file_loaded or self.num_pulses == 0:
-            return
-
-        ae_energy = np.array(
-            [calculate_energy(signal) for signal in self.ae_data],
-            dtype=float,
-        )
-        eme_energy = np.array(
-            [calculate_energy(signal) for signal in self.eme_data],
-            dtype=float,
-        )
-
-        ae_max = np.array(
-            [calculate_max_abs(signal) for signal in self.ae_data],
-            dtype=float,
-        )
-        eme_max = np.array(
-            [calculate_max_abs(signal) for signal in self.eme_data],
-            dtype=float,
-        )
-
-        x = []
-        ae_energy_windowed = []
-        eme_energy_windowed = []
-        ae_max_windowed = []
-        eme_max_windowed = []
-
-        for start in range(0, self.num_pulses - window_size + 1, window_size):
-            end = start + window_size
-
-            x.append(start + 1)
-
-            ae_energy_windowed.append(np.sum(ae_energy[start:end]))
-            eme_energy_windowed.append(np.sum(eme_energy[start:end]))
-
-            ae_max_windowed.append(np.max(ae_max[start:end]))
-            eme_max_windowed.append(np.max(eme_max[start:end]))
-
-        x = np.array(x, dtype=int)
-
-        ae_energy_windowed = np.array(ae_energy_windowed, dtype=float)
-        eme_energy_windowed = np.array(eme_energy_windowed, dtype=float)
-
-        ae_max_windowed = np.array(ae_max_windowed, dtype=float)
-        eme_max_windowed = np.array(eme_max_windowed, dtype=float)
-
-        self.pw_d_ae.clear()
-        self.pw_d_eme.clear()
-        self.pw_s_ae.clear()
-        self.pw_s_eme.clear()
-        self.pw_tsallis_ae.clear()
-        self.pw_tsallis_eme.clear()
-
-        self.pw_d_ae.plot(x, ae_max_windowed, pen=pg.mkPen("b", width=1.5))
-        self.pw_d_eme.plot(x, eme_max_windowed, pen=pg.mkPen("r", width=1.5))
-
-        self.pw_s_ae.plot(x, ae_energy_windowed, pen=pg.mkPen("b", width=1.5))
-        self.pw_s_eme.plot(x, eme_energy_windowed, pen=pg.mkPen("r", width=1.5))
-
-        self.pw_tsallis_ae.plot(
+        self.pw_s_value.plot(
             x,
-            np.cumsum(ae_energy_windowed),
+            np.full_like(x, result["ae_s_value"], dtype=float),
             pen=pg.mkPen("b", width=1.5),
+            name=f"АЭ S={result['ae_s_value']:.4f}",
         )
-        self.pw_tsallis_eme.plot(
+        self.pw_s_value.plot(
             x,
-            np.cumsum(eme_energy_windowed),
+            np.full_like(x, result["eme_s_value"], dtype=float),
             pen=pg.mkPen("r", width=1.5),
+            name=f"ЭМЭ S={result['eme_s_value']:.4f}",
         )
 
-        self.draw_b_value_placeholder(ae_energy_windowed, eme_energy_windowed)
+        self.pw_gamma_value.plot(
+            x,
+            np.full_like(x, result["ae_gamma"], dtype=float),
+            pen=pg.mkPen("b", width=1.5),
+            name=f"АЭ γ={result['ae_gamma']:.4f}",
+        )
+        self.pw_gamma_value.plot(
+            x,
+            np.full_like(x, result["eme_gamma"], dtype=float),
+            pen=pg.mkPen("r", width=1.5),
+            name=f"ЭМЭ γ={result['eme_gamma']:.4f}",
+        )
+
+        if result["ae_q"] is not None:
+            self.pw_tsallis_q.plot(
+                x,
+                np.full_like(x, result["ae_q"], dtype=float),
+                pen=pg.mkPen("b", width=1.5),
+                name=f"АЭ q={result['ae_q']:.4f}, a={result['ae_a']:.3e}",
+            )
+
+        if result["eme_q"] is not None:
+            self.pw_tsallis_q.plot(
+                x,
+                np.full_like(x, result["eme_q"], dtype=float),
+                pen=pg.mkPen("r", width=1.5),
+                name=f"ЭМЭ q={result['eme_q']:.4f}, a={result['eme_a']:.3e}",
+            )
+
+        self.auto_range_stat_plots()
+
+    def draw_statistics_window_result(self, result: dict) -> None:
+        self.clear_statistics_plot_items()
+
+        self.pw_d_value.plot(
+            result["d_x_ae"],
+            result["ae_d_windowed"],
+            pen=pg.mkPen("b", width=1.5),
+            name="АЭ",
+        )
+        self.pw_d_value.plot(
+            result["d_x_eme"],
+            result["eme_d_windowed"],
+            pen=pg.mkPen("r", width=1.5),
+            name="ЭМЭ",
+        )
+
+        self.pw_s_value.plot(
+            result["s_x_ae"],
+            result["ae_s_windowed"],
+            pen=pg.mkPen("b", width=1.5),
+            name="АЭ",
+        )
+        self.pw_s_value.plot(
+            result["s_x_eme"],
+            result["eme_s_windowed"],
+            pen=pg.mkPen("r", width=1.5),
+            name="ЭМЭ",
+        )
+
+        self.pw_gamma_value.plot(
+            result["gamma_x_ae"],
+            result["ae_gamma_windowed"],
+            pen=pg.mkPen("b", width=1.5),
+            name="АЭ",
+        )
+        self.pw_gamma_value.plot(
+            result["gamma_x_eme"],
+            result["eme_gamma_windowed"],
+            pen=pg.mkPen("r", width=1.5),
+            name="ЭМЭ",
+        )
+
+        self.pw_tsallis_q.plot(
+            result["tsallis_x_ae"],
+            result["ae_q_windowed"],
+            pen=pg.mkPen("b", width=1.5),
+            name="АЭ",
+        )
+        self.pw_tsallis_q.plot(
+            result["tsallis_x_eme"],
+            result["eme_q_windowed"],
+            pen=pg.mkPen("r", width=1.5),
+            name="ЭМЭ",
+        )
+
+        self.auto_range_stat_plots()
+
+    def auto_range_stat_plots(self) -> None:
+        for plot_widget in self.stat_plots:
+            plot_widget.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
+            plot_widget.autoRange()
 
     def draw_b_value_plot(self) -> None:
         """
