@@ -220,67 +220,287 @@ def write_b_value_csv(
                     f"{float(fit_values[point_index]):.6f}\n"
                 )
 
-def write_wavelet_csv(
-    output_path: Path,
-    amplitude: np.ndarray,
-    frequencies: np.ndarray,
-    time_ms: np.ndarray | None,
-    original_event_numbers: list[int] | None = None,
+def write_wavelet_results_csv(
+    output_path,
+    wavelet_results: dict,
 ) -> None:
     """
-    Сохраняет результат вейвлет-анализа в CSV.
+    Экспортирует результаты вейвлет-анализа для двух каналов: AE и EME.
 
-    Если time_ms не None, экспортируется скалограмма одного импульса:
-        frequency_hz, time_ms, log10_wavelet_amplitude
+    Поддерживает два режима:
 
-    Если time_ms is None, экспортируется сводка по всем импульсам:
-        frequency_hz, event_number, original_event_number, log10_wavelet_amplitude
+    mode == "current":
+        Полные скалограммы текущего импульса.
+        Столбцы матрицы = время внутри импульса.
+
+    mode == "all_events":
+        Сводные вейвлет-карты по всем импульсам.
+        Столбцы матрицы = номера импульсов.
     """
-    with open(output_path, "w", encoding="utf-8") as file:
-        if time_ms is not None:
-            file.write(
-                "frequency_hz,"
-                "time_ms,"
-                "log10_wavelet_amplitude\n"
+    import csv
+    from pathlib import Path
+
+    output_path = Path(output_path)
+
+    mode = wavelet_results.get("mode", "")
+    channels = wavelet_results.get("channels", {})
+
+    if not channels:
+        raise ValueError("Нет данных вейвлет-анализа для экспорта.")
+
+    with output_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+
+        writer.writerow(
+            [
+                "mode",
+                "channel",
+                "event_number",
+                "original_event_number",
+                "frequency_hz",
+                "time_ms",
+                "log10_wavelet_amplitude",
+            ]
+        )
+
+        if mode == "current":
+            event_number = wavelet_results.get("event_number", "")
+            original_event_number = wavelet_results.get(
+                "original_event_number",
+                "",
             )
 
-            for freq_index in range(amplitude.shape[0]):
-                frequency = float(frequencies[freq_index])
+            for channel_name, channel_result in channels.items():
+                amplitude = np.asarray(
+                    channel_result["amplitude"],
+                    dtype=float,
+                )
+                frequencies = np.asarray(
+                    channel_result["frequencies"],
+                    dtype=float,
+                )
+                time_ms = np.asarray(
+                    channel_result["time_ms"],
+                    dtype=float,
+                )
 
-                for time_index in range(amplitude.shape[1]):
-                    file.write(
-                        f"{frequency:.6f},"
-                        f"{float(time_ms[time_index]):.9f},"
-                        f"{float(amplitude[freq_index, time_index]):.9f}\n"
+                if amplitude.ndim != 2:
+                    raise ValueError(
+                        f"Wavelet amplitude for {channel_name} must be 2D."
                     )
+
+                if amplitude.shape[0] != len(frequencies):
+                    raise ValueError(
+                        f"Frequency count mismatch for {channel_name}."
+                    )
+
+                if amplitude.shape[1] != len(time_ms):
+                    raise ValueError(
+                        f"Time count mismatch for {channel_name}."
+                    )
+
+                for frequency_index, frequency_hz in enumerate(frequencies):
+                    for time_index, time_value in enumerate(time_ms):
+                        writer.writerow(
+                            [
+                                mode,
+                                channel_name,
+                                event_number,
+                                original_event_number,
+                                float(frequency_hz),
+                                float(time_value),
+                                float(amplitude[frequency_index, time_index]),
+                            ]
+                        )
 
             return
 
-        file.write(
-            "frequency_hz,"
-            "event_number,"
-            "original_event_number,"
-            "log10_wavelet_amplitude\n"
+        if mode == "all_events":
+            event_numbers = np.asarray(
+                wavelet_results.get("event_numbers", []),
+                dtype=int,
+            )
+            original_event_numbers = np.asarray(
+                wavelet_results.get("original_event_numbers", []),
+                dtype=int,
+            )
+
+            if len(event_numbers) == 0:
+                raise ValueError("Нет номеров импульсов для экспорта.")
+
+            if len(original_event_numbers) != len(event_numbers):
+                raise ValueError(
+                    "Количество исходных номеров импульсов не совпадает "
+                    "с количеством текущих номеров."
+                )
+
+            for channel_name, channel_result in channels.items():
+                amplitude = np.asarray(
+                    channel_result["amplitude"],
+                    dtype=float,
+                )
+                frequencies = np.asarray(
+                    channel_result["frequencies"],
+                    dtype=float,
+                )
+
+                if amplitude.ndim != 2:
+                    raise ValueError(
+                        f"Wavelet amplitude for {channel_name} must be 2D."
+                    )
+
+                if amplitude.shape[0] != len(frequencies):
+                    raise ValueError(
+                        f"Frequency count mismatch for {channel_name}."
+                    )
+
+                if amplitude.shape[1] != len(event_numbers):
+                    raise ValueError(
+                        f"Event count mismatch for {channel_name}."
+                    )
+
+                for frequency_index, frequency_hz in enumerate(frequencies):
+                    for event_index, event_number in enumerate(event_numbers):
+                        writer.writerow(
+                            [
+                                mode,
+                                channel_name,
+                                int(event_number),
+                                int(original_event_numbers[event_index]),
+                                float(frequency_hz),
+                                "",
+                                float(amplitude[frequency_index, event_index]),
+                            ]
+                        )
+
+            return
+
+        raise ValueError(f"Unknown wavelet export mode: {mode}")
+
+def write_processed_signal_matrix_csv(
+    output_path,
+    signals,
+    event_times_seconds,
+    event_numbers=None,
+    original_event_numbers=None,
+    progress_callback=None,
+) -> None:
+    """
+    Экспортирует обработанные сигналы текущего каталога в матричный CSV.
+
+    Формат CSV:
+        row_label,event_1_original_50,event_2_original_51,...
+        experiment_time_seconds,1.89487,1.92412,...
+        sample_0,-12.4,3.1,...
+        sample_1,-10.2,2.7,...
+
+    То есть:
+        - столбцы = импульсы / сигналы;
+        - первая строка = подписи столбцов;
+        - первый столбец = подписи строк;
+        - первая строка данных = время импульса в эксперименте;
+        - следующие строки = значения обработанного сигнала;
+        - без CAMAC metadata/header.
+    """
+    import csv
+    from pathlib import Path
+
+    import numpy as np
+
+    output_path = Path(output_path)
+
+    signals = [
+        np.asarray(signal, dtype=float)
+        for signal in signals
+    ]
+
+    event_times_seconds = np.asarray(event_times_seconds, dtype=float)
+
+    if len(signals) == 0:
+        raise ValueError("Нет сигналов для экспорта.")
+
+    event_count = len(signals)
+
+    if len(event_times_seconds) != event_count:
+        raise ValueError(
+            "Количество времен событий не совпадает с количеством сигналов."
         )
 
-        if original_event_numbers is None:
-            original_event_numbers = []
+    if event_numbers is None:
+        event_numbers = np.arange(1, event_count + 1, dtype=int)
+    else:
+        event_numbers = np.asarray(event_numbers, dtype=int)
 
-        for freq_index in range(amplitude.shape[0]):
-            frequency = float(frequencies[freq_index])
+    if original_event_numbers is None:
+        original_event_numbers = event_numbers
+    else:
+        original_event_numbers = np.asarray(original_event_numbers, dtype=int)
 
-            for event_index in range(amplitude.shape[1]):
-                event_number = event_index + 1
+    if len(event_numbers) != event_count:
+        raise ValueError(
+            "Количество текущих номеров импульсов не совпадает с количеством сигналов."
+        )
 
-                original_event_number = (
-                    original_event_numbers[event_index]
-                    if event_index < len(original_event_numbers)
-                    else event_number
+    if len(original_event_numbers) != event_count:
+        raise ValueError(
+            "Количество исходных номеров импульсов не совпадает с количеством сигналов."
+        )
+
+    max_signal_length = max(len(signal) for signal in signals)
+
+    if max_signal_length == 0:
+        raise ValueError("Сигналы пустые.")
+
+    def format_number(value: float) -> str:
+        if not np.isfinite(value):
+            return ""
+        return f"{float(value):.15g}"
+
+    column_labels = [
+        f"event_{int(event_number)}_original_{int(original_event_number)}"
+        for event_number, original_event_number in zip(
+            event_numbers,
+            original_event_numbers,
+        )
+    ]
+
+    total_rows = max_signal_length + 2
+
+    with output_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+
+        writer.writerow(
+            ["row_label"]
+            + column_labels
+        )
+
+        writer.writerow(
+            ["experiment_time_seconds"]
+            + [
+                format_number(time_value)
+                for time_value in event_times_seconds
+            ]
+        )
+
+        if progress_callback is not None:
+            progress_callback(2, total_rows)
+
+        for sample_index in range(max_signal_length):
+            row = [f"sample_{sample_index}"]
+
+            for signal in signals:
+                if sample_index < len(signal):
+                    row.append(format_number(signal[sample_index]))
+                else:
+                    row.append("")
+
+            writer.writerow(row)
+
+            if (
+                progress_callback is not None
+                and (
+                    sample_index % 25 == 0
+                    or sample_index == max_signal_length - 1
                 )
-
-                file.write(
-                    f"{frequency:.6f},"
-                    f"{event_number},"
-                    f"{original_event_number},"
-                    f"{float(amplitude[freq_index, event_index]):.9f}\n"
-                )
+            ):
+                progress_callback(sample_index + 3, total_rows)

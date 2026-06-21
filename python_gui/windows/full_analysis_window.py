@@ -84,8 +84,9 @@ from file_io.csv_exporters import (
     write_b_value_csv,
     write_catalog_csv,
     write_processed_event_csv,
+    write_processed_signal_matrix_csv,
     write_raw_event_csv,
-    write_wavelet_csv,
+    write_wavelet_results_csv,
 )
 
 from workers.statistics_worker import StatisticsWorker
@@ -142,6 +143,7 @@ class FullAnalysisWindow(QMainWindow):
         # Внутри храним индексы Python с 0, поэтому при показе пользователю добавляем +1.
         self.original_event_indices = np.array([], dtype=int)
         self.relative_seconds = np.array([], dtype=float)
+        self.original_archive_seconds = np.array([], dtype=float)
         self.ae_energy = np.array([], dtype=float)
         self.eme_energy = np.array([], dtype=float)
 
@@ -150,17 +152,15 @@ class FullAnalysisWindow(QMainWindow):
         self.lbl_b_value_result = None
         self.lbl_raw_header = None
 
-        self.combo_wavelet_channel = None
         self.combo_wavelet_scope = None
         self.combo_wavelet_name = None
         self.input_wavelet_min_freq = None
         self.input_wavelet_max_freq = None
-        self.pw_wavelet = None
 
-        self.last_wavelet_amplitude = None
-        self.last_wavelet_time_ms = None
-        self.last_wavelet_frequencies = None
-        self.last_wavelet_channel_title = ""
+        self.pw_wavelet_ae = None
+        self.pw_wavelet_eme = None
+
+        self.last_wavelet_results = {}
 
         self.statistics_thread = None
         self.statistics_worker = None
@@ -391,6 +391,40 @@ class FullAnalysisWindow(QMainWindow):
             return float(self.relative_seconds[event_index])
 
         return 0.0
+
+    def get_original_archive_time_seconds(self, event_index: int) -> float:
+        """
+        Возвращает время импульса в эксперименте для текущего event_index.
+
+        Используется для матричного экспорта обработанных сигналов:
+        первая строка CSV = время каждого импульса.
+
+        После CUT/delete event_index относится к текущему диапазону,
+        поэтому сначала переводим его в исходный индекс архива.
+        """
+        original_event_index = self.get_original_event_index(event_index)
+
+        if (
+            original_event_index >= 0
+            and original_event_index < len(self.original_archive_seconds)
+        ):
+            return float(self.original_archive_seconds[original_event_index])
+
+        return self.get_relative_time(event_index)
+
+    def get_current_archive_time_values(self) -> np.ndarray:
+        """
+        Возвращает времена всех импульсов текущего рабочего диапазона.
+
+        Длина массива равна self.num_pulses.
+        """
+        return np.array(
+            [
+                self.get_original_archive_time_seconds(event_index)
+                for event_index in range(self.num_pulses)
+            ],
+            dtype=float,
+        )
 
     def calculate_total_energies(self) -> tuple[float, float]:
         """
@@ -991,7 +1025,9 @@ class FullAnalysisWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        layout.addWidget(QLabel("<b>Окно 4: Вейвлет-анализ текущего импульса</b>"))
+        layout.addWidget(
+            QLabel("<b>Окно 4: Вейвлет-скалограммы АЭ и ЭМЭ</b>")
+        )
 
         controls_layout = QHBoxLayout()
 
@@ -1001,13 +1037,6 @@ class FullAnalysisWindow(QMainWindow):
         self.combo_wavelet_scope.addItem("Текущий импульс", "current")
         self.combo_wavelet_scope.addItem("Все импульсы", "all")
         controls_layout.addWidget(self.combo_wavelet_scope)
-
-        controls_layout.addWidget(QLabel("Канал:"))
-
-        self.combo_wavelet_channel = QComboBox()
-        self.combo_wavelet_channel.addItem("АЭ", "ae")
-        self.combo_wavelet_channel.addItem("ЭМЭ", "eme")
-        controls_layout.addWidget(self.combo_wavelet_channel)
 
         controls_layout.addWidget(QLabel("Вейвлет:"))
 
@@ -1030,11 +1059,11 @@ class FullAnalysisWindow(QMainWindow):
         self.input_wavelet_max_freq.setFixedWidth(100)
         controls_layout.addWidget(self.input_wavelet_max_freq)
 
-        self.btn_draw_wavelet = QPushButton("Построить вейвлет")
+        self.btn_draw_wavelet = QPushButton("Построить вейвлеты")
         self.btn_draw_wavelet.clicked.connect(self.draw_wavelet_plot)
         controls_layout.addWidget(self.btn_draw_wavelet)
 
-        self.btn_export_wavelet = QPushButton("Экспорт вейвлета CSV...")
+        self.btn_export_wavelet = QPushButton("Экспорт вейвлетов CSV...")
         self.btn_export_wavelet.clicked.connect(self.export_wavelet_csv)
         controls_layout.addWidget(self.btn_export_wavelet)
 
@@ -1042,21 +1071,31 @@ class FullAnalysisWindow(QMainWindow):
 
         layout.addLayout(controls_layout)
 
-        self.pw_wavelet = pg.PlotWidget(title="Вейвлет-спектр текущего импульса")
-        self.setup_graph_context_menu(self.pw_wavelet)
-        self.pw_wavelet.showGrid(x=True, y=True)
-        self.pw_wavelet.setLabel("bottom", "Время", units="ms")
-        self.pw_wavelet.setLabel("left", "Частота", units="Hz")
+        wavelet_grid = QGridLayout()
 
-        layout.addWidget(self.pw_wavelet)
+        self.pw_wavelet_ae = pg.PlotWidget(title="Вейвлет-скалограмма АЭ")
+        self.pw_wavelet_eme = pg.PlotWidget(title="Вейвлет-скалограмма ЭМЭ")
+
+        for row_index, plot_widget in enumerate(
+            [self.pw_wavelet_ae, self.pw_wavelet_eme]
+        ):
+            self.setup_graph_context_menu(plot_widget)
+            plot_widget.showGrid(x=True, y=True)
+            plot_widget.setLabel("bottom", "Время", units="ms")
+            plot_widget.setLabel("left", "Частота", units="Hz")
+            wavelet_grid.addWidget(plot_widget, row_index, 0)
+
+        layout.addLayout(wavelet_grid)
 
         layout.addWidget(
             QLabel(
-                "<i>Вейвлет строится для текущего выбранного импульса из Окна 2.</i>"
+                "<i>В режиме текущего импульса строятся две полные скалограммы: "
+                "АЭ и ЭМЭ. В режиме всех импульсов строятся две сводные "
+                "вейвлет-карты по текущему рабочему диапазону.</i>"
             )
         )
 
-        self.tabs.addTab(tab, "Окно 4: Вейвлеты")    
+        self.tabs.addTab(tab, "Окно 4: Вейвлеты")
 
         # ================= TAB 5: EXPORT =================
 
@@ -1096,6 +1135,15 @@ class FullAnalysisWindow(QMainWindow):
         btn_export_range_folder.setMinimumHeight(40)
         btn_export_range_folder.clicked.connect(self.export_current_range_folder)
         layout_data.addWidget(btn_export_range_folder)
+
+        btn_export_signal_matrices = QPushButton(
+            "Экспортировать обработанные сигналы АЭ/ЭМЭ в CSV..."
+        )
+        btn_export_signal_matrices.setMinimumHeight(40)
+        btn_export_signal_matrices.clicked.connect(
+            self.export_processed_signal_matrices
+        )
+        layout_data.addWidget(btn_export_signal_matrices)
 
         layout.addWidget(box_data)
 
@@ -1474,6 +1522,173 @@ class FullAnalysisWindow(QMainWindow):
             QMessageBox.Information,
         )
 
+    def export_processed_signal_matrices(self) -> None:
+        """
+        Экспортирует текущий обработанный каталог сигналов в два CSV файла:
+
+        1. processed_AE_signals.csv
+        2. processed_EME_signals.csv
+
+        Формат каждого файла:
+            - столбцы = импульсы текущего диапазона;
+            - первая строка = время импульса в эксперименте;
+            - следующие строки = значения обработанного сигнала;
+            - без metadata и без заголовков.
+
+        После CUT/delete экспортируется только текущий рабочий диапазон.
+        """
+        if not self.file_loaded:
+            self.show_message(
+                "Ошибка",
+                "Сначала загрузите CAMAC архив.",
+                QMessageBox.Warning,
+            )
+            return
+
+        if not self.ae_data or not self.eme_data:
+            self.show_message(
+                "Ошибка",
+                "Нет обработанных сигналов для экспорта.",
+                QMessageBox.Warning,
+            )
+            return
+
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Выберите папку для экспорта обработанных сигналов",
+            str(Path.home()),
+        )
+
+        if not folder_path:
+            return
+
+        output_folder = Path(folder_path)
+
+        file_stem = Path(self.current_file_name).stem
+
+        ae_output_path = output_folder / f"{file_stem}_processed_AE_signals.csv"
+        eme_output_path = output_folder / f"{file_stem}_processed_EME_signals.csv"
+
+        event_times_seconds = self.get_current_archive_time_values()
+
+        event_numbers = np.arange(1, self.num_pulses + 1, dtype=int)
+
+        original_event_numbers = np.array(
+            [
+                self.get_original_event_number(event_index)
+                for event_index in range(self.num_pulses)
+            ],
+            dtype=int,
+        )
+
+        ae_max_len = max(len(signal) for signal in self.ae_data)
+        eme_max_len = max(len(signal) for signal in self.eme_data)
+
+        total_progress_rows = ae_max_len + 2 + eme_max_len + 2
+
+        progress = QProgressDialog(
+            (
+                "Экспорт обработанных сигналов в CSV...\n\n"
+                f"Импульсов: {self.num_pulses}\n"
+                "Будут созданы два файла: AE и EME."
+            ),
+            "Отмена",
+            0,
+            total_progress_rows,
+            self,
+        )
+
+        progress.setWindowTitle("Экспорт сигналов")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumWidth(560)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+        QApplication.processEvents()
+
+        exported_ae_rows = 0
+
+        def ae_progress_callback(done_rows: int, total_rows: int) -> None:
+            nonlocal exported_ae_rows
+
+            exported_ae_rows = done_rows
+
+            progress.setLabelText(
+                (
+                    "Экспорт обработанных сигналов АЭ...\n\n"
+                    f"Строка {done_rows} / {total_rows}"
+                )
+            )
+            progress.setValue(done_rows)
+            QApplication.processEvents()
+
+            if progress.wasCanceled():
+                raise RuntimeError("Экспорт отменен пользователем.")
+
+        def eme_progress_callback(done_rows: int, total_rows: int) -> None:
+            progress.setLabelText(
+                (
+                    "Экспорт обработанных сигналов ЭМЭ...\n\n"
+                    f"Строка {done_rows} / {total_rows}"
+                )
+            )
+            progress.setValue(exported_ae_rows + done_rows)
+            QApplication.processEvents()
+
+            if progress.wasCanceled():
+                raise RuntimeError("Экспорт отменен пользователем.")
+
+        try:
+            write_processed_signal_matrix_csv(
+                ae_output_path,
+                self.ae_data,
+                event_times_seconds,
+                event_numbers=event_numbers,
+                original_event_numbers=original_event_numbers,
+                progress_callback=ae_progress_callback,
+            )
+
+            write_processed_signal_matrix_csv(
+                eme_output_path,
+                self.eme_data,
+                event_times_seconds,
+                event_numbers=event_numbers,
+                original_event_numbers=original_event_numbers,
+                progress_callback=eme_progress_callback,
+            )
+
+        except Exception as error:
+            progress.close()
+
+            self.show_message(
+                "Ошибка экспорта",
+                (
+                    "Не удалось экспортировать обработанные сигналы.\n\n"
+                    f"Ошибка: {repr(error)}"
+                ),
+                QMessageBox.Critical,
+                details=traceback.format_exc(),
+            )
+            return
+
+        progress.setValue(total_progress_rows)
+        QApplication.processEvents()
+        progress.close()
+
+        self.show_message(
+            "Экспорт",
+            (
+                "Обработанные сигналы успешно экспортированы.\n\n"
+                f"AE файл:\n{ae_output_path}\n\n"
+                f"EME файл:\n{eme_output_path}\n\n"
+                f"Импульсов: {self.num_pulses}\n"
+                f"Строк AE: {ae_max_len + 2}\n"
+                f"Строк EME: {eme_max_len + 2}"
+            ),
+            QMessageBox.Information,
+        )
+
     def export_b_value_csv(self) -> None:
         if not self.file_loaded:
             self.show_message(
@@ -1538,18 +1753,32 @@ class FullAnalysisWindow(QMainWindow):
         )
 
     def export_wavelet_csv(self) -> None:
-        if self.last_wavelet_amplitude is None:
+        """
+        Экспортирует последние построенные вейвлет-результаты.
+
+        После обновления окна 4 экспорт сохраняет оба канала:
+        - AE;
+        - EME.
+
+        Для текущего импульса:
+            строки содержат channel, frequency_hz, time_ms, amplitude.
+
+        Для всех импульсов:
+            строки содержат channel, event_number, original_event_number,
+            frequency_hz, amplitude.
+        """
+        if not self.last_wavelet_results:
             self.show_message(
                 "Ошибка",
-                "Сначала постройте вейвлет.",
+                "Сначала постройте вейвлеты.",
                 QMessageBox.Warning,
             )
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Сохранить вейвлет CSV",
-            str(Path.home() / "wavelet_scalogram.csv"),
+            "Сохранить вейвлеты CSV",
+            str(Path.home() / "wavelet_results_ae_eme.csv"),
             "CSV files (*.csv);;Text files (*.txt);;All files (*.*)",
         )
 
@@ -1562,17 +1791,9 @@ class FullAnalysisWindow(QMainWindow):
             output_path = output_path.with_suffix(".csv")
 
         try:
-            original_event_numbers = [
-                self.get_original_event_number(i)
-                for i in range(self.num_pulses)
-            ]
-
-            write_wavelet_csv(
+            write_wavelet_results_csv(
                 output_path,
-                self.last_wavelet_amplitude,
-                self.last_wavelet_frequencies,
-                self.last_wavelet_time_ms,
-                original_event_numbers,
+                self.last_wavelet_results,
             )
 
         except Exception as error:
@@ -1587,15 +1808,21 @@ class FullAnalysisWindow(QMainWindow):
             )
             return
 
+        mode = self.last_wavelet_results.get("mode", "unknown")
+        channels = ", ".join(
+            self.last_wavelet_results.get("channels", {}).keys()
+        )
+
         self.show_message(
             "Экспорт",
             (
                 "Вейвлет CSV успешно сохранен.\n\n"
                 f"Файл:\n{output_path}\n"
-                f"Режим: {self.last_wavelet_channel_title}"
+                f"Режим: {mode}\n"
+                f"Каналы: {channels}"
             ),
             QMessageBox.Information,
-        )    
+        )
 
     # ================= B-VALUE TAB =================
 
@@ -1722,6 +1949,20 @@ class FullAnalysisWindow(QMainWindow):
                 self.archive.relative_seconds(),
                 dtype=float,
             )
+
+            # Время эксперимента от начала архива.
+            # Для экспорта обработанных сигналов удобнее использовать именно это время,
+            # а не absolute_seconds(), потому что new format может содержать Unix-like timestamp.
+            self.original_archive_seconds = np.array(
+                self.archive.relative_seconds(),
+                dtype=float,
+            )
+
+            if len(self.original_archive_seconds) != self.num_pulses:
+                self.original_archive_seconds = np.arange(
+                    self.num_pulses,
+                    dtype=float,
+                )
 
             self.ae_energy = np.array(
                 self.archive.ae_energy_values(),
@@ -2722,6 +2963,107 @@ class FullAnalysisWindow(QMainWindow):
                 name="ЭМЭ",
             )
 
+    def get_wavelet_settings(self) -> tuple[str, float, float] | None:
+        """
+        Читает настройки вейвлет-анализа из GUI.
+
+        Возвращает:
+            (wavelet_name, min_freq, max_freq)
+
+        Если пользователь ввел некорректный диапазон частот,
+        показывает сообщение и возвращает None.
+        """
+        wavelet_name = self.combo_wavelet_name.currentData()
+
+        try:
+            min_freq = float(self.input_wavelet_min_freq.text().strip())
+            max_freq = float(self.input_wavelet_max_freq.text().strip())
+        except ValueError:
+            self.show_message(
+                "Ошибка",
+                "Минимальная и максимальная частота должны быть числами.",
+                QMessageBox.Warning,
+            )
+            return None
+
+        if min_freq <= 0 or max_freq <= 0 or min_freq >= max_freq:
+            self.show_message(
+                "Ошибка",
+                "Проверьте диапазон частот: min должен быть > 0 и меньше max.",
+                QMessageBox.Warning,
+            )
+            return None
+
+        return wavelet_name, min_freq, max_freq
+
+    def draw_wavelet_image(
+        self,
+        plot_widget: pg.PlotWidget,
+        amplitude_matrix: np.ndarray,
+        x_values: np.ndarray,
+        frequencies: np.ndarray,
+        title: str,
+        x_label: str,
+        x_units: str | None = None,
+    ) -> None:
+        """
+        Рисует одну вейвлет-карту в PlotWidget.
+
+        amplitude_matrix:
+            матрица log10 amplitude.
+            Ось 0 = частота, ось 1 = время или номер импульса.
+
+        x_values:
+            либо время внутри импульса, либо номера импульсов.
+        """
+        plot_widget.clear()
+
+        if amplitude_matrix.size == 0:
+            return
+
+        finite_values = amplitude_matrix[np.isfinite(amplitude_matrix)]
+
+        if len(finite_values) == 0:
+            return
+
+        image_item = pg.ImageItem()
+
+        low_level = float(np.percentile(finite_values, 5))
+        high_level = float(np.percentile(finite_values, 99))
+
+        if low_level == high_level:
+            high_level = low_level + 1e-12
+
+        image_item.setImage(
+            amplitude_matrix.T,
+            levels=(low_level, high_level),
+        )
+
+        color_map = pg.colormap.get("viridis")
+        image_item.setLookupTable(color_map.getLookupTable())
+
+        x_min = float(np.min(x_values))
+        x_max = float(np.max(x_values))
+
+        freq_min = float(np.min(frequencies))
+        freq_max = float(np.max(frequencies))
+
+        x_width = max(x_max - x_min, 1e-12)
+        freq_width = max(freq_max - freq_min, 1e-12)
+
+        image_item.setRect(
+            x_min,
+            freq_min,
+            x_width,
+            freq_width,
+        )
+
+        plot_widget.addItem(image_item)
+        plot_widget.setTitle(title)
+        plot_widget.setLabel("bottom", x_label, units=x_units)
+        plot_widget.setLabel("left", "Частота", units="Hz")
+        plot_widget.autoRange()
+
     def draw_wavelet_plot(self) -> None:
         if not self.file_loaded or not self.ae_data:
             self.show_message(
@@ -2742,6 +3084,14 @@ class FullAnalysisWindow(QMainWindow):
             self.draw_wavelet_current_event()
 
     def draw_wavelet_current_event(self) -> None:
+        """
+        Строит две полные вейвлет-скалограммы текущего импульса:
+        - АЭ;
+        - ЭМЭ.
+
+        Это соответствует требованию окна 4: два графических окна
+        с вейвлет-скалограммами для АЭ и ЭМЭ.
+        """
         if not self.file_loaded or not self.ae_data:
             self.show_message(
                 "Ошибка",
@@ -2750,7 +3100,7 @@ class FullAnalysisWindow(QMainWindow):
             )
             return
 
-        if self.pw_wavelet is None:
+        if self.pw_wavelet_ae is None or self.pw_wavelet_eme is None:
             return
 
         event_index = self.current_index
@@ -2758,36 +3108,17 @@ class FullAnalysisWindow(QMainWindow):
         if event_index < 0 or event_index >= self.num_pulses:
             return
 
-        channel = self.combo_wavelet_channel.currentData()
-        wavelet_name = self.combo_wavelet_name.currentData()
+        settings = self.get_wavelet_settings()
 
-        try:
-            min_freq = float(self.input_wavelet_min_freq.text().strip())
-            max_freq = float(self.input_wavelet_max_freq.text().strip())
-        except ValueError:
-            self.show_message(
-                "Ошибка",
-                "Минимальная и максимальная частота должны быть числами.",
-                QMessageBox.Warning,
-            )
+        if settings is None:
             return
 
-        if min_freq <= 0 or max_freq <= 0 or min_freq >= max_freq:
-            self.show_message(
-                "Ошибка",
-                "Проверьте диапазон частот: min должен быть > 0 и меньше max.",
-                QMessageBox.Warning,
-            )
-            return
+        wavelet_name, min_freq, max_freq = settings
 
-        if channel == "ae":
-            signal = np.asarray(self.ae_data[event_index], dtype=float)
-            channel_title = "АЭ"
-        else:
-            signal = np.asarray(self.eme_data[event_index], dtype=float)
-            channel_title = "ЭМЭ"
+        ae_signal = np.asarray(self.ae_data[event_index], dtype=float)
+        eme_signal = np.asarray(self.eme_data[event_index], dtype=float)
 
-        if len(signal) < 10:
+        if len(ae_signal) < 10 or len(eme_signal) < 10:
             self.show_message(
                 "Ошибка",
                 "Сигнал слишком короткий для вейвлет-анализа.",
@@ -2796,8 +3127,17 @@ class FullAnalysisWindow(QMainWindow):
             return
 
         try:
-            amplitude, time_ms, calculated_frequencies = compute_current_event_wavelet(
-                signal,
+            ae_amplitude, ae_time_ms, ae_frequencies = compute_current_event_wavelet(
+                ae_signal,
+                wavelet_name,
+                min_freq,
+                max_freq,
+                SAMPLE_INTERVAL_SECONDS,
+                DEFAULT_WAVELET_FREQUENCY_COUNT_SINGLE,
+            )
+
+            eme_amplitude, eme_time_ms, eme_frequencies = compute_current_event_wavelet(
+                eme_signal,
                 wavelet_name,
                 min_freq,
                 max_freq,
@@ -2825,101 +3165,92 @@ class FullAnalysisWindow(QMainWindow):
             )
             return
 
-        self.last_wavelet_amplitude = amplitude
-        self.last_wavelet_time_ms = time_ms
-        self.last_wavelet_frequencies = calculated_frequencies
-        self.last_wavelet_channel_title = channel_title
+        event_number = event_index + 1
+        original_event_number = self.get_original_event_number(event_index)
 
-        self.pw_wavelet.clear()
-
-        image_item = pg.ImageItem()
-
-        low_level = float(np.percentile(amplitude, 5))
-        high_level = float(np.percentile(amplitude, 99))
-
-        image_item.setImage(
-            amplitude.T,
-            levels=(low_level, high_level),
+        self.draw_wavelet_image(
+            self.pw_wavelet_ae,
+            ae_amplitude,
+            ae_time_ms,
+            ae_frequencies,
+            (
+                f"Вейвлет-скалограмма АЭ, импульс {event_number} "
+                f"(исх. {original_event_number})"
+            ),
+            "Время",
+            "ms",
         )
 
-        color_map = pg.colormap.get("viridis")
-        image_item.setLookupTable(color_map.getLookupTable())
-
-        time_min = float(time_ms[0])
-        time_max = float(time_ms[-1])
-
-        freq_min = float(np.min(calculated_frequencies))
-        freq_max = float(np.max(calculated_frequencies))
-
-        image_item.setRect(
-            time_min,
-            freq_min,
-            time_max - time_min,
-            freq_max - freq_min,
+        self.draw_wavelet_image(
+            self.pw_wavelet_eme,
+            eme_amplitude,
+            eme_time_ms,
+            eme_frequencies,
+            (
+                f"Вейвлет-скалограмма ЭМЭ, импульс {event_number} "
+                f"(исх. {original_event_number})"
+            ),
+            "Время",
+            "ms",
         )
 
-        self.pw_wavelet.addItem(image_item)
-
-        self.pw_wavelet.setTitle(
-            f"Вейвлет-спектр {channel_title}, импульс {event_index + 1}"
-        )
-        self.pw_wavelet.setLabel("bottom", "Время", units="ms")
-        self.pw_wavelet.setLabel("left", "Частота", units="Hz")
+        self.last_wavelet_results = {
+            "mode": "current",
+            "event_number": event_number,
+            "original_event_number": original_event_number,
+            "channels": {
+                "AE": {
+                    "amplitude": ae_amplitude,
+                    "time_ms": ae_time_ms,
+                    "frequencies": ae_frequencies,
+                },
+                "EME": {
+                    "amplitude": eme_amplitude,
+                    "time_ms": eme_time_ms,
+                    "frequencies": eme_frequencies,
+                },
+            },
+        }
 
     def draw_wavelet_all_events(self) -> None:
         """
-        Строит вейвлет-сводку для всех импульсов текущего диапазона.
+        Строит две вейвлет-сводки для всех импульсов текущего диапазона:
+        - АЭ;
+        - ЭМЭ.
 
-        Для одного импульса можно построить полную скалограмму.
-        Но для всех импульсов это слишком тяжело, поэтому используется сводка:
-
-        - для каждого импульса считается CWT;
-        - амплитуда усредняется по времени;
+        Для всех импульсов строится не полная скалограмма каждого события,
+        а сводная карта:
         - каждый импульс становится одним вертикальным столбцом;
         - ось X = номер импульса;
         - ось Y = частота;
-        - цвет = log10 средней wavelet amplitude.
-
-        Для ускорения используется:
-        - меньше частотных рядов;
-        - downsample сигнала;
-        - progress dialog.
+        - цвет = log10 средней wavelet amplitude по времени.
         """
-        channel = self.combo_wavelet_channel.currentData()
-        wavelet_name = self.combo_wavelet_name.currentData()
-
-        try:
-            min_freq = float(self.input_wavelet_min_freq.text().strip())
-            max_freq = float(self.input_wavelet_max_freq.text().strip())
-        except ValueError:
+        if not self.file_loaded or not self.ae_data or not self.eme_data:
             self.show_message(
                 "Ошибка",
-                "Минимальная и максимальная частота должны быть числами.",
+                "Сначала загрузите CAMAC архив.",
                 QMessageBox.Warning,
             )
             return
 
-        if min_freq <= 0 or max_freq <= 0 or min_freq >= max_freq:
-            self.show_message(
-                "Ошибка",
-                "Проверьте диапазон частот: min должен быть > 0 и меньше max.",
-                QMessageBox.Warning,
-            )
+        if self.pw_wavelet_ae is None or self.pw_wavelet_eme is None:
             return
 
-        if channel == "ae":
-            signals = self.ae_data
-            channel_title = "АЭ"
-        else:
-            signals = self.eme_data
-            channel_title = "ЭМЭ"
+        settings = self.get_wavelet_settings()
+
+        if settings is None:
+            return
+
+        wavelet_name, min_freq, max_freq = settings
 
         if self.num_pulses > 300:
             confirmed = self.ask_confirmation(
                 "Большой расчет",
                 (
-                    "Вейвлет для всех импульсов может занять время.\n\n"
-                    f"Импульсов: {self.num_pulses}\n\n"
+                    "Вейвлет для всех импульсов теперь считается для двух каналов: "
+                    "АЭ и ЭМЭ.\n\n"
+                    f"Импульсов: {self.num_pulses}\n"
+                    f"Операций примерно: {self.num_pulses * 2}\n\n"
                     "Совет: сначала сделайте CUT на нужный диапазон.\n\n"
                     "Продолжить?"
                 ),
@@ -2932,13 +3263,13 @@ class FullAnalysisWindow(QMainWindow):
 
         progress = QProgressDialog(
             (
-                "Расчет вейвлета для всех импульсов...\n\n"
+                "Расчет вейвлет-сводок для АЭ и ЭМЭ...\n\n"
                 f"Импульсов: {self.num_pulses}\n"
                 "Это может занять некоторое время."
             ),
             "Отмена",
             0,
-            self.num_pulses,
+            self.num_pulses * 2,
             self,
         )
 
@@ -2953,24 +3284,62 @@ class FullAnalysisWindow(QMainWindow):
         progress.show()
         QApplication.processEvents()
 
-        def update_progress(value: int) -> None:
-            progress.setValue(value)
-            QApplication.processEvents()
-
-        def is_cancelled() -> bool:
+        def cancel_callback() -> bool:
             return progress.wasCanceled()
 
+        def ae_progress_callback(done: int, total: int | None = None) -> None:
+            if total is None:
+                total = self.num_pulses
+
+            progress.setLabelText(
+                (
+                    "Расчет вейвлет-сводки АЭ...\n\n"
+                    f"{done} / {total}"
+                )
+            )
+            progress.setValue(min(done, self.num_pulses))
+            QApplication.processEvents()
+
+        def eme_progress_callback(done: int, total: int | None = None) -> None:
+            if total is None:
+                total = self.num_pulses
+
+            progress.setLabelText(
+                (
+                    "Расчет вейвлет-сводки ЭМЭ...\n\n"
+                    f"{done} / {total}"
+                )
+            )
+            progress.setValue(min(self.num_pulses + done, self.num_pulses * 2))
+            QApplication.processEvents()
+
         try:
-            amplitude_matrix, calculated_frequencies = compute_all_events_wavelet_summary(
-                signals,
+            ae_amplitude_matrix, ae_frequencies = compute_all_events_wavelet_summary(
+                self.ae_data,
                 wavelet_name,
                 min_freq,
                 max_freq,
                 SAMPLE_INTERVAL_SECONDS,
                 DEFAULT_WAVELET_FREQUENCY_COUNT_ALL,
                 downsample_step=4,
-                progress_callback=update_progress,
-                cancel_callback=is_cancelled,
+                progress_callback=ae_progress_callback,
+                cancel_callback=cancel_callback,
+            )
+
+            if progress.wasCanceled():
+                progress.close()
+                return
+
+            eme_amplitude_matrix, eme_frequencies = compute_all_events_wavelet_summary(
+                self.eme_data,
+                wavelet_name,
+                min_freq,
+                max_freq,
+                SAMPLE_INTERVAL_SECONDS,
+                DEFAULT_WAVELET_FREQUENCY_COUNT_ALL,
+                downsample_step=4,
+                progress_callback=eme_progress_callback,
+                cancel_callback=cancel_callback,
             )
 
         except ImportError:
@@ -3007,47 +3376,54 @@ class FullAnalysisWindow(QMainWindow):
             )
             return
 
-        progress.setValue(self.num_pulses)
+        progress.setValue(self.num_pulses * 2)
         QApplication.processEvents()
         progress.close()
 
-        self.last_wavelet_amplitude = amplitude_matrix
-        self.last_wavelet_time_ms = None
-        self.last_wavelet_frequencies = calculated_frequencies
-        self.last_wavelet_channel_title = f"{channel_title}, все импульсы"
+        event_numbers = self.get_event_numbers()
 
-        self.pw_wavelet.clear()
-
-        image_item = pg.ImageItem()
-
-        low_level = float(np.percentile(amplitude_matrix, 5))
-        high_level = float(np.percentile(amplitude_matrix, 99))
-
-        image_item.setImage(
-            amplitude_matrix.T,
-            levels=(low_level, high_level),
+        self.draw_wavelet_image(
+            self.pw_wavelet_ae,
+            ae_amplitude_matrix,
+            event_numbers,
+            ae_frequencies,
+            "Вейвлет-сводка АЭ для всех импульсов",
+            "Номер импульса",
+            None,
         )
 
-        color_map = pg.colormap.get("viridis")
-        image_item.setLookupTable(color_map.getLookupTable())
-
-        x_min = 1.0
-        x_max = float(self.num_pulses)
-
-        freq_min = float(np.min(calculated_frequencies))
-        freq_max = float(np.max(calculated_frequencies))
-
-        image_item.setRect(
-            x_min,
-            freq_min,
-            x_max - x_min,
-            freq_max - freq_min,
+        self.draw_wavelet_image(
+            self.pw_wavelet_eme,
+            eme_amplitude_matrix,
+            event_numbers,
+            eme_frequencies,
+            "Вейвлет-сводка ЭМЭ для всех импульсов",
+            "Номер импульса",
+            None,
         )
 
-        self.pw_wavelet.addItem(image_item)
-
-        self.pw_wavelet.setTitle(
-            f"Вейвлет-сводка {channel_title} для всех импульсов"
+        original_event_numbers = np.array(
+            [
+                self.get_original_event_number(i)
+                for i in range(self.num_pulses)
+            ],
+            dtype=int,
         )
-        self.pw_wavelet.setLabel("bottom", "Номер импульса")
-        self.pw_wavelet.setLabel("left", "Частота", units="Hz")
+
+        self.last_wavelet_results = {
+            "mode": "all_events",
+            "event_numbers": event_numbers,
+            "original_event_numbers": original_event_numbers,
+            "channels": {
+                "AE": {
+                    "amplitude": ae_amplitude_matrix,
+                    "time_ms": None,
+                    "frequencies": ae_frequencies,
+                },
+                "EME": {
+                    "amplitude": eme_amplitude_matrix,
+                    "time_ms": None,
+                    "frequencies": eme_frequencies,
+                },
+            },
+        }
