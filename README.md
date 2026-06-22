@@ -1,19 +1,29 @@
+# CAMAC Signal Analyser
+
 > **Language / Язык**
 >
 > This README is bilingual.
 >
 > - English instructions are first.
-> - Русская версия инструкции находится ниже, во второй половине файла.
+> - Русская версия находится ниже, во второй половине файла.
 >
-> Основные пользователи приложения работают на Windows 11, поэтому рекомендуемый способ запуска: **Docker Desktop + WSL2 + Ubuntu + WSLg**. CAMAC Signal Analyser
+> Main target platform: **Windows 10**.
+>
+> Recommended Windows 10 setup:
+>
+> ```text
+> Windows 10 Build 19044+ if possible
+> Docker Desktop
+> WSL2
+> Ubuntu inside WSL
+> WSLg GUI support, or VcXsrv if WSLg does not work
+> ```
 
-# CAMAC Signal Analyser is a desktop GUI application for reading, analysing, visualising, and exporting CAMAC acoustic emission (AE / АЭ) and electromagnetic emission (EME / ЭМЭ) signal archives.
-
-The application is intended mainly for **Windows 11 users**, but it can also run on Linux and macOS through Docker.
+CAMAC Signal Analyser is a desktop GUI application for reading, analysing, visualising, and exporting CAMAC acoustic emission (AE / АЭ) and electromagnetic emission (EME / ЭМЭ) signal archives.
 
 ---
 
-## Main features
+# Main features
 
 - CAMAC binary archive loading
 - automatic old/new CAMAC encoding detection
@@ -30,7 +40,7 @@ The application is intended mainly for **Windows 11 users**, but it can also run
 
 ---
 
-## Project structure
+# Project structure
 
 ```text
 camac_signal_analyser/
@@ -57,7 +67,7 @@ So if you put a file into:
 sample_data/archive.001
 ```
 
-then inside the application it appears as:
+inside the application it appears as:
 
 ```text
 /app/sample_data/archive.001
@@ -65,59 +75,29 @@ then inside the application it appears as:
 
 ---
 
-# Recommended setup for Windows 11
+# Windows 10 recommended setup
 
-The recommended Windows 11 setup is:
+Windows 10 can work, but the GUI part depends on Linux GUI support.
 
-```text
-Windows 11
-Docker Desktop
-WSL2
-Ubuntu inside WSL
-WSLg GUI support
-```
-
-This avoids installing Python, CMake, PySide6, pybind11, and C++ build tools directly on Windows.
-
----
-
-## Windows 11 Quick Start: run from prebuilt release archive
-
-This is the easiest method for regular users.
-
-### 1. Install WSL and Ubuntu
-
-Open **PowerShell as Administrator** and run:
-
-```powershell
-wsl --install
-```
-
-Restart Windows if asked.
-
-Then open **Ubuntu** from the Start Menu and finish the Ubuntu setup.
-
----
-
-### 2. Install Docker Desktop
-
-Install Docker Desktop for Windows.
-
-During setup, use the **WSL2 backend**.
-
-After installation, open Docker Desktop and check:
+There are two possible Windows 10 paths:
 
 ```text
-Settings -> Resources -> WSL Integration
+Option A:
+    Windows 10 with WSLg GUI support.
+    This is the preferred Windows 10 method.
+
+Option B:
+    Windows 10 without WSLg.
+    Use VcXsrv as a Windows X server.
 ```
 
-Enable integration for your Ubuntu distribution.
+Before debugging the CAMAC application, first test whether Linux GUI apps work in WSL.
 
 ---
 
-### 3. Test Linux GUI support
+# Windows 10 Quick Start: test GUI support first
 
-Inside Ubuntu/WSL, run:
+Open Ubuntu/WSL and run:
 
 ```bash
 sudo apt update
@@ -125,21 +105,79 @@ sudo apt install -y x11-apps
 xeyes
 ```
 
-If a small eyes window appears, WSLg GUI support works.
+If a small eyes window appears, GUI support works. Use **Option A**.
 
-If `xeyes` does not open, fix WSLg/Windows GUI support before running this application.
+If `xeyes` does not open, WSL GUI forwarding is not working. Use **Option B** or use Windows 11 if possible.
 
 ---
 
-### 4. Download the Docker image archive
+# Option A: Windows 10 with WSLg
 
-Go to the GitHub repository release page:
+## 1. Install or update WSL
+
+Open PowerShell as Administrator:
+
+```powershell
+wsl --install -d Ubuntu
+wsl --update
+wsl --shutdown
+```
+
+Then open Ubuntu from the Start Menu.
+
+Check WSL distributions:
+
+```powershell
+wsl -l -v
+```
+
+Ubuntu should use WSL version 2.
+
+---
+
+## 2. Install Docker Desktop
+
+Install Docker Desktop for Windows.
+
+During setup, use the WSL2 backend.
+
+After installation, open Docker Desktop and enable:
+
+```text
+Settings -> Resources -> WSL Integration -> Ubuntu
+```
+
+Docker Desktop should be running before launching the app.
+
+---
+
+## 3. Test GUI support
+
+Inside Ubuntu/WSL:
+
+```bash
+sudo apt update
+sudo apt install -y x11-apps
+xeyes
+```
+
+If `xeyes` opens, continue.
+
+---
+
+# Option A1: Run from prebuilt Docker image archive
+
+This is the easiest method for regular users.
+
+## 1. Download release archive
+
+Go to the GitHub repository:
 
 ```text
 GitHub repository -> Releases -> latest release
 ```
 
-Download the release asset:
+Download:
 
 ```text
 camac-signal-analyser-dev.tar.gz
@@ -147,11 +185,11 @@ camac-signal-analyser-dev.tar.gz
 
 This file is a prebuilt Docker image archive.
 
-It is not part of the normal Git repository source code. It is attached to the GitHub Release as a downloadable asset.
+It is attached to a GitHub Release as a downloadable asset. It is not committed into the normal Git source code.
 
 ---
 
-### 5. Prepare working folder inside Ubuntu/WSL
+## 2. Create working folder inside Ubuntu/WSL
 
 Inside Ubuntu/WSL:
 
@@ -161,19 +199,23 @@ cd ~/camac_signal_analyser_run
 mkdir -p sample_data exports
 ```
 
-Move or copy the downloaded archive into this folder.
-
-For example, if the file is in your Windows Downloads folder:
+If the downloaded archive is in Windows Downloads, copy it into WSL:
 
 ```bash
 cp /mnt/c/Users/YOUR_WINDOWS_USERNAME/Downloads/camac-signal-analyser-dev.tar.gz .
 ```
 
-Replace `YOUR_WINDOWS_USERNAME` with your actual Windows username.
+Replace:
+
+```text
+YOUR_WINDOWS_USERNAME
+```
+
+with your actual Windows username.
 
 ---
 
-### 6. Load the Docker image
+## 3. Load Docker image
 
 Inside Ubuntu/WSL:
 
@@ -187,7 +229,7 @@ Check that the image exists:
 docker images
 ```
 
-You should see something like:
+Expected:
 
 ```text
 REPOSITORY              TAG
@@ -196,9 +238,9 @@ camac-signal-analyser   dev
 
 ---
 
-### 7. Add CAMAC archives
+## 4. Add CAMAC archive files
 
-Put CAMAC binary archive files into:
+Put CAMAC binary archives into:
 
 ```text
 sample_data/
@@ -213,9 +255,9 @@ sample_data/190723.001
 
 ---
 
-### 8. Run the application on Windows 11 through WSL
+## 5. Run application with WSLg
 
-Run this command from Ubuntu/WSL:
+Run from Ubuntu/WSL:
 
 ```bash
 docker run --rm -it \
@@ -242,13 +284,13 @@ Export files to:
     /app/exports
 ```
 
-After export, files appear on your computer in:
+Exported files appear on your computer in:
 
 ```text
 exports/
 ```
 
-Check from Ubuntu/WSL:
+Check:
 
 ```bash
 ls -lh exports
@@ -256,9 +298,9 @@ ls -lh exports
 
 ---
 
-# Windows 11: build from source instead
+# Option A2: Build Docker image from source on Windows 10 / WSLg
 
-Use this method if you want to build the Docker image yourself.
+Use this method if you want to build the image yourself instead of downloading the release archive.
 
 Inside Ubuntu/WSL:
 
@@ -294,11 +336,220 @@ docker run --rm -it \
 
 ---
 
-# Running on Linux
+# Option B: Windows 10 without WSLg, using VcXsrv
+
+Use this only if:
+
+```text
+xeyes does not open inside Ubuntu/WSL
+```
+
+This method uses a separate Windows X server.
+
+---
+
+## 1. Install VcXsrv
+
+Install VcXsrv on Windows.
+
+Start:
+
+```text
+XLaunch
+```
+
+Choose:
+
+```text
+Multiple windows
+Start no client
+Disable access control
+```
+
+Keep VcXsrv running.
+
+---
+
+## 2. Set DISPLAY inside Ubuntu/WSL
+
+Inside Ubuntu/WSL:
+
+```bash
+export DISPLAY=$(cat /etc/resolv.conf | grep nameserver | awk '{print $2}'):0
+export QT_X11_NO_MITSHM=1
+```
+
+Test:
+
+```bash
+sudo apt update
+sudo apt install -y x11-apps
+xeyes
+```
+
+If `xeyes` opens, continue.
+
+---
+
+## 3. Run from prebuilt Docker archive with VcXsrv
+
+Create working folder:
+
+```bash
+mkdir -p ~/camac_signal_analyser_run
+cd ~/camac_signal_analyser_run
+mkdir -p sample_data exports
+```
+
+Copy the archive into this folder:
+
+```bash
+cp /mnt/c/Users/YOUR_WINDOWS_USERNAME/Downloads/camac-signal-analyser-dev.tar.gz .
+```
+
+Load image:
+
+```bash
+gunzip -c camac-signal-analyser-dev.tar.gz | docker load
+```
+
+Run:
+
+```bash
+docker run --rm -it \
+  --name camac-gui \
+  -e DISPLAY="$DISPLAY" \
+  -e QT_X11_NO_MITSHM=1 \
+  -v "$PWD/sample_data:/app/sample_data:rw" \
+  -v "$PWD/exports:/app/exports:rw" \
+  camac-signal-analyser:dev
+```
+
+---
+
+## 4. Build from source with VcXsrv
+
+From Ubuntu/WSL:
+
+```bash
+git clone <YOUR_REPOSITORY_URL>
+cd camac_signal_analyser
+mkdir -p sample_data exports
+docker build -t camac-signal-analyser:dev .
+```
+
+Run:
+
+```bash
+docker run --rm -it \
+  --name camac-gui \
+  -e DISPLAY="$DISPLAY" \
+  -e QT_X11_NO_MITSHM=1 \
+  -v "$PWD/sample_data:/app/sample_data:rw" \
+  -v "$PWD/exports:/app/exports:rw" \
+  camac-signal-analyser:dev
+```
+
+---
+
+# Common Windows 10 mistakes
+
+## Wrong: running Python directly
+
+Do not do this for normal use:
+
+```bash
+cd ~/camac_signal_analyser-main/python_gui
+python3 main.py
+```
+
+This can fail because dependencies and `camac_core` may not be available.
+
+Use Docker instead.
+
+---
+
+## Wrong: running Docker from the wrong folder
+
+Wrong:
+
+```bash
+cd ~/camac_signal_analyser-main/python_gui
+docker build -t camac-signal-analyser:dev .
+```
+
+Correct:
+
+```bash
+cd ~/camac_signal_analyser-main
+docker build -t camac-signal-analyser:dev .
+```
+
+The project root must contain:
+
+```text
+Dockerfile
+requirements.txt
+python_gui
+cpp_core
+README.md
+```
+
+---
+
+## Wrong: opening normal Windows paths inside the app
+
+Inside Docker, use:
+
+```text
+/app/sample_data
+/app/exports
+```
+
+not:
+
+```text
+C:\Users\...
+```
+
+and not:
+
+```text
+/home/username/...
+```
+
+unless you mounted that folder manually.
+
+---
+
+# Windows 11 note
+
+Windows 11 is usually easier than Windows 10 because WSLg support is more reliable.
+
+The Windows 11 command is the same as **Option A / WSLg**:
+
+```bash
+docker run --rm -it \
+  --name camac-gui \
+  -e DISPLAY="$DISPLAY" \
+  -e WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
+  -e XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+  -e PULSE_SERVER="$PULSE_SERVER" \
+  -e QT_X11_NO_MITSHM=1 \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+  -v /mnt/wslg:/mnt/wslg:rw \
+  -v "$PWD/sample_data:/app/sample_data:rw" \
+  -v "$PWD/exports:/app/exports:rw" \
+  camac-signal-analyser:dev
+```
+
+---
+
+# Running on Linux / Ubuntu
 
 Linux is the simplest platform for this Docker GUI application.
 
-## 1. Clone and build
+## Build from source
 
 ```bash
 git clone <YOUR_REPOSITORY_URL>
@@ -313,11 +564,7 @@ Put CAMAC archives into:
 sample_data/
 ```
 
----
-
-## 2. Run on Linux
-
-Allow Docker containers to use the local X11 display:
+Allow Docker containers to use local X11:
 
 ```bash
 xhost +local:docker
@@ -336,70 +583,52 @@ docker run --rm -it \
   camac-signal-analyser:dev
 ```
 
-After closing the application:
+After closing:
 
 ```bash
 xhost -local:docker
 ```
 
-Inside the application:
-
-```text
-Open archives from:
-    /app/sample_data
-
-Export files to:
-    /app/exports
-```
-
 ---
 
-## Linux: run from prebuilt release archive
-
-If you downloaded:
-
-```text
-camac-signal-analyser-dev.tar.gz
-```
-
-load it with:
+## Linux: run from release archive
 
 ```bash
+mkdir -p camac_signal_analyser_run
+cd camac_signal_analyser_run
+mkdir -p sample_data exports
 gunzip -c camac-signal-analyser-dev.tar.gz | docker load
 ```
 
-Then create working folders:
+Run:
 
 ```bash
-mkdir -p sample_data exports
+xhost +local:docker
+
+docker run --rm -it \
+  --name camac-gui \
+  -e DISPLAY="$DISPLAY" \
+  -e QT_X11_NO_MITSHM=1 \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+  -v "$PWD/sample_data:/app/sample_data:rw" \
+  -v "$PWD/exports:/app/exports:rw" \
+  camac-signal-analyser:dev
+
+xhost -local:docker
 ```
-
-Put archives into:
-
-```text
-sample_data/
-```
-
-Run the same Linux Docker command above.
 
 ---
 
 # Running on macOS
 
-macOS support requires Docker Desktop and XQuartz.
-
-GUI forwarding through XQuartz can be slower than Linux or Windows WSLg.
-
----
-
-## 1. Install requirements
-
-Install:
+macOS support requires:
 
 ```text
 Docker Desktop
 XQuartz
 ```
+
+GUI forwarding through XQuartz can be slower than Linux or Windows WSLg.
 
 Start XQuartz:
 
@@ -413,7 +642,7 @@ In XQuartz settings, enable:
 Allow connections from network clients
 ```
 
-Then restart XQuartz.
+Restart XQuartz.
 
 Allow local X11 connections:
 
@@ -421,9 +650,7 @@ Allow local X11 connections:
 xhost + 127.0.0.1
 ```
 
----
-
-## 2. Build on macOS
+Build from source:
 
 ```bash
 git clone <YOUR_REPOSITORY_URL>
@@ -432,15 +659,7 @@ mkdir -p sample_data exports
 docker build -t camac-signal-analyser:dev .
 ```
 
-Put CAMAC archive files into:
-
-```text
-sample_data/
-```
-
----
-
-## 3. Run on macOS
+Run:
 
 ```bash
 docker run --rm -it \
@@ -452,39 +671,19 @@ docker run --rm -it \
   camac-signal-analyser:dev
 ```
 
-Inside the application:
-
-```text
-Open archives from:
-    /app/sample_data
-
-Export files to:
-    /app/exports
-```
-
----
-
-## macOS: run from prebuilt release archive
-
-If you downloaded:
-
-```text
-camac-signal-analyser-dev.tar.gz
-```
-
-load it with:
+Run from release archive:
 
 ```bash
 gunzip -c camac-signal-analyser-dev.tar.gz | docker load
 ```
 
-Then run the same macOS Docker command above.
+Then use the same macOS `docker run` command.
 
 ---
 
 # Using the application
 
-## Basic workflow
+Basic workflow:
 
 ```text
 1. Put CAMAC binary archives into sample_data/.
@@ -544,7 +743,7 @@ delete current event
 
 ## Window 3: Statistical coefficients
 
-Shows four coefficient plots:
+Shows:
 
 ```text
 d-value
@@ -581,7 +780,7 @@ Modes:
 
 ```text
 Current impulse:
-    full time-frequency scalogram for the selected AE and EME signals.
+    full time-frequency scalogram for selected AE and EME signals.
 
 All impulses:
     summary wavelet maps over the current archive range.
@@ -606,9 +805,7 @@ graph images through plot context menu
 
 ---
 
-# CSV export notes
-
-## Processed signal matrix export
+# Processed signal matrix CSV format
 
 Window 5 can export two matrix files:
 
@@ -668,7 +865,7 @@ original_50:
 
 The application auto-detects supported CAMAC archive formats.
 
-The exported processed signal length depends on the encoding format:
+Processed signal length depends on the encoding format:
 
 ```text
 Old format:
@@ -686,7 +883,7 @@ New format:
         3072 raw samples - 4 timestamp samples = 3068 processed values
 ```
 
-The processed signal matrix export uses the already processed signals, so CAMAC metadata/header samples are not included.
+The processed signal matrix export uses already processed signals, so CAMAC metadata/header samples are not included.
 
 ---
 
@@ -700,7 +897,7 @@ Example file:
 camac-signal-analyser-dev.tar.gz
 ```
 
-This file should not be committed into the Git repository.
+This file should not be committed into Git.
 
 It should be uploaded here:
 
@@ -718,13 +915,13 @@ Users can download the archive, load it into Docker, and run the application wit
 gunzip -c camac-signal-analyser-dev.tar.gz | docker load
 ```
 
-Check the image:
+Check:
 
 ```bash
 docker images
 ```
 
-Expected image:
+Expected:
 
 ```text
 camac-signal-analyser   dev
@@ -744,27 +941,6 @@ docker build -t camac-signal-analyser:dev .
 
 ---
 
-## Test image on Linux
-
-```bash
-mkdir -p sample_data exports
-
-xhost +local:docker
-
-docker run --rm -it \
-  --name camac-gui \
-  -e DISPLAY="$DISPLAY" \
-  -e QT_X11_NO_MITSHM=1 \
-  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-  -v "$PWD/sample_data:/app/sample_data:rw" \
-  -v "$PWD/exports:/app/exports:rw" \
-  camac-signal-analyser:dev
-
-xhost -local:docker
-```
-
----
-
 ## Save image as compressed release archive
 
 ```bash
@@ -777,14 +953,6 @@ Upload it as a GitHub Release asset instead.
 
 ---
 
-## Load image archive for testing
-
-```bash
-gunzip -c camac-signal-analyser-dev.tar.gz | docker load
-```
-
----
-
 ## Recommended release workflow
 
 ```text
@@ -793,7 +961,7 @@ gunzip -c camac-signal-analyser-dev.tar.gz | docker load
 3. Test Docker image locally.
 4. Save image:
        docker save camac-signal-analyser:dev | gzip -9 > camac-signal-analyser-dev.tar.gz
-5. Go to GitHub repository.
+5. Open GitHub repository.
 6. Open Releases.
 7. Draft a new release.
 8. Create a tag, for example:
@@ -903,61 +1071,24 @@ Then log out and log back in.
 
 ---
 
-## GUI does not open on Linux
+## GUI does not open on Windows 10
 
-Check:
-
-```bash
-echo $DISPLAY
-```
-
-Then allow local Docker GUI access:
+First test:
 
 ```bash
-xhost +local:docker
-```
-
-Run the Docker command again.
-
----
-
-## GUI does not open on Windows
-
-Inside Ubuntu/WSL, test:
-
-```bash
-sudo apt update
-sudo apt install -y x11-apps
 xeyes
 ```
 
-If `xeyes` does not open, the issue is WSLg/Windows GUI support, not the CAMAC application.
-
----
-
-## GUI does not open on macOS
-
-Make sure XQuartz is running:
+If it does not open:
 
 ```bash
-open -a XQuartz
+wsl --update
+wsl --shutdown
 ```
 
-Enable:
+Then reopen Ubuntu and test again.
 
-```text
-Allow connections from network clients
-```
-
-Restart XQuartz.
-
-Then run:
-
-```bash
-xhost + 127.0.0.1
-```
-
-Start the Docker container again.
+If it still does not open, use VcXsrv or Windows 11.
 
 ---
 
@@ -969,17 +1100,7 @@ Inside Docker, use:
 /app/sample_data
 ```
 
-Do not use your normal host path.
-
-Example:
-
-```text
-Host:
-    ./sample_data/test.001
-
-Inside application:
-    /app/sample_data/test.001
-```
+Do not use your normal Windows/Linux host path.
 
 ---
 
@@ -1044,23 +1165,35 @@ This is a Dockerized desktop GUI application.
 
 Docker makes the Python/C++ environment reproducible, but GUI forwarding depends on the operating system.
 
-Best supported:
+Primary target:
 
 ```text
-Linux / Ubuntu
+Windows 10
 ```
 
-Recommended for primary users:
+Best Windows 10 path:
 
 ```text
-Windows 11 + WSL2 + WSLg + Docker Desktop
+Windows 10 Build 19044+
+WSL2
+Ubuntu
+Docker Desktop
+WSLg
 ```
 
-Possible on macOS:
+Fallback Windows 10 path:
 
 ```text
-Docker Desktop + XQuartz
+VcXsrv
 ```
+
+Easier alternative:
+
+```text
+Windows 11 + WSLg
+```
+
+---
 
 ---
 
@@ -1070,24 +1203,21 @@ Docker Desktop + XQuartz
 
 CAMAC Signal Analyser — это настольное GUI-приложение для чтения, анализа, визуализации и экспорта CAMAC-архивов с сигналами акустической эмиссии (АЭ / AE) и электромагнитной эмиссии (ЭМЭ / EME).
 
-Основная целевая платформа: **Windows 11**.
+Основная целевая платформа: **Windows 10**.
 
-Рекомендуемый способ запуска на Windows 11:
+Рекомендуемый способ запуска:
 
 ```text
+Windows 10 Build 19044+ если возможно
 Docker Desktop
 WSL2
 Ubuntu внутри WSL
-WSLg для отображения GUI
+WSLg GUI support или VcXsrv, если WSLg не работает
 ```
-
-Такой способ позволяет не устанавливать Python, CMake, PySide6, pybind11 и C++ build tools напрямую в Windows.
 
 ---
 
-## Возможности приложения
-
-Приложение поддерживает:
+# Возможности приложения
 
 ```text
 - чтение бинарных CAMAC архивов;
@@ -1107,7 +1237,7 @@ WSLg для отображения GUI
 
 ---
 
-## Структура проекта
+# Структура проекта
 
 ```text
 camac_signal_analyser/
@@ -1128,61 +1258,9 @@ camac_signal_analyser/
 /app/exports
 ```
 
-То есть файл:
-
-```text
-sample_data/archive.001
-```
-
-внутри приложения будет виден как:
-
-```text
-/app/sample_data/archive.001
-```
-
 ---
 
-# Быстрый запуск на Windows 11 через готовый Docker-архив
-
-Это рекомендуемый способ для обычных пользователей.
-
----
-
-## 1. Установить WSL и Ubuntu
-
-Откройте **PowerShell от имени администратора** и выполните:
-
-```powershell
-wsl --install
-```
-
-Если Windows попросит перезагрузку, перезагрузите компьютер.
-
-После этого откройте **Ubuntu** из меню Start и завершите первичную настройку.
-
----
-
-## 2. Установить Docker Desktop
-
-Установите Docker Desktop для Windows.
-
-Во время установки используйте backend:
-
-```text
-WSL2 backend
-```
-
-После установки откройте Docker Desktop и проверьте:
-
-```text
-Settings -> Resources -> WSL Integration
-```
-
-Включите интеграцию для Ubuntu.
-
----
-
-## 3. Проверить поддержку Linux GUI
+# Windows 10: сначала проверить GUI
 
 В Ubuntu/WSL выполните:
 
@@ -1192,35 +1270,65 @@ sudo apt install -y x11-apps
 xeyes
 ```
 
-Если открылось маленькое окно с глазами, значит WSLg GUI работает.
+Если появилось маленькое окно с глазами, Linux GUI работает. Используйте вариант с WSLg.
 
-Если `xeyes` не открывается, сначала нужно исправить WSLg/GUI поддержку Windows.
+Если `xeyes` не открылся, значит GUI forwarding не работает. Используйте VcXsrv или Windows 11.
 
 ---
 
-## 4. Скачать Docker-архив приложения
+# Вариант A: Windows 10 с WSLg
 
-Откройте страницу репозитория GitHub:
+## 1. Установить или обновить WSL
+
+В PowerShell от имени администратора:
+
+```powershell
+wsl --install -d Ubuntu
+wsl --update
+wsl --shutdown
+```
+
+Откройте Ubuntu из Start Menu.
+
+---
+
+## 2. Установить Docker Desktop
+
+Установите Docker Desktop для Windows.
+
+Включите WSL2 backend.
+
+Проверьте:
+
+```text
+Settings -> Resources -> WSL Integration -> Ubuntu
+```
+
+Docker Desktop должен быть запущен.
+
+---
+
+# Запуск из готового Docker archive
+
+## 1. Скачать release archive
+
+Откройте:
 
 ```text
 GitHub repository -> Releases -> latest release
 ```
 
-Скачайте файл:
+Скачайте:
 
 ```text
 camac-signal-analyser-dev.tar.gz
 ```
 
-Это готовый Docker image archive.
-
-Этот файл **не хранится внутри Git commit history**. Он прикреплен к GitHub Release как downloadable asset.
-
 ---
 
-## 5. Подготовить рабочую папку в Ubuntu/WSL
+## 2. Подготовить папку
 
-В Ubuntu/WSL выполните:
+В Ubuntu/WSL:
 
 ```bash
 mkdir -p ~/camac_signal_analyser_run
@@ -1228,67 +1336,45 @@ cd ~/camac_signal_analyser_run
 mkdir -p sample_data exports
 ```
 
-Скопируйте скачанный архив в эту папку.
-
-Например, если файл лежит в Windows Downloads:
+Если файл в Windows Downloads:
 
 ```bash
 cp /mnt/c/Users/YOUR_WINDOWS_USERNAME/Downloads/camac-signal-analyser-dev.tar.gz .
 ```
 
-Замените:
-
-```text
-YOUR_WINDOWS_USERNAME
-```
-
-на имя пользователя Windows.
-
 ---
 
-## 6. Загрузить Docker image
-
-В Ubuntu/WSL:
+## 3. Загрузить Docker image
 
 ```bash
 gunzip -c camac-signal-analyser-dev.tar.gz | docker load
 ```
 
-Проверьте, что image появился:
+Проверить:
 
 ```bash
 docker images
 ```
 
-Должно быть примерно так:
+Ожидаемо:
 
 ```text
-REPOSITORY              TAG
 camac-signal-analyser   dev
 ```
 
 ---
 
-## 7. Добавить CAMAC архивы
+## 4. Добавить CAMAC архивы
 
-Положите бинарные CAMAC архивы в папку:
+Положите CAMAC архивы в:
 
 ```text
 sample_data/
 ```
 
-Пример:
-
-```text
-sample_data/example.001
-sample_data/190723.001
-```
-
 ---
 
-## 8. Запустить приложение на Windows 11 через WSL
-
-Выполните команду из Ubuntu/WSL:
+## 5. Запустить приложение через WSLg
 
 ```bash
 docker run --rm -it \
@@ -1305,37 +1391,25 @@ docker run --rm -it \
   camac-signal-analyser:dev
 ```
 
-Внутри приложения открывайте архивы из:
+Внутри приложения:
 
 ```text
-/app/sample_data
+Открывать архивы из:
+    /app/sample_data
+
+Экспортировать в:
+    /app/exports
 ```
 
-Экспорт сохраняйте в:
-
-```text
-/app/exports
-```
-
-После экспорта файлы появятся на вашем компьютере в папке:
+Файлы появятся в:
 
 ```text
 exports/
 ```
 
-Проверить можно так:
-
-```bash
-ls -lh exports
-```
-
 ---
 
-# Запуск на Windows 11 через сборку из исходников
-
-Используйте этот способ, если хотите собрать Docker image самостоятельно.
-
-В Ubuntu/WSL:
+# Сборка из исходников на Windows 10 / WSLg
 
 ```bash
 git clone <YOUR_REPOSITORY_URL>
@@ -1344,13 +1418,7 @@ mkdir -p sample_data exports
 docker build -t camac-signal-analyser:dev .
 ```
 
-Положите CAMAC архивы в:
-
-```text
-sample_data/
-```
-
-Запустите:
+Запуск:
 
 ```bash
 docker run --rm -it \
@@ -1369,155 +1437,103 @@ docker run --rm -it \
 
 ---
 
-# Запуск на Linux / Ubuntu
+# Вариант B: Windows 10 без WSLg, через VcXsrv
 
-Linux — самая простая платформа для Docker GUI приложения.
-
----
-
-## 1. Сборка
-
-```bash
-git clone <YOUR_REPOSITORY_URL>
-cd camac_signal_analyser
-mkdir -p sample_data exports
-docker build -t camac-signal-analyser:dev .
-```
-
-Положите CAMAC архивы в:
+Используйте только если:
 
 ```text
-sample_data/
+xeyes не открывается
+```
+
+## 1. Установить VcXsrv
+
+Запустите XLaunch.
+
+Выберите:
+
+```text
+Multiple windows
+Start no client
+Disable access control
 ```
 
 ---
 
-## 2. Запуск
-
-Разрешите Docker контейнеру использовать X11 display:
+## 2. Настроить DISPLAY в Ubuntu/WSL
 
 ```bash
-xhost +local:docker
+export DISPLAY=$(cat /etc/resolv.conf | grep nameserver | awk '{print $2}'):0
+export QT_X11_NO_MITSHM=1
 ```
 
-Запустите:
+Проверить:
+
+```bash
+xeyes
+```
+
+Если окно появилось, можно запускать приложение.
+
+---
+
+## 3. Запустить Docker через VcXsrv
 
 ```bash
 docker run --rm -it \
   --name camac-gui \
   -e DISPLAY="$DISPLAY" \
   -e QT_X11_NO_MITSHM=1 \
-  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
   -v "$PWD/sample_data:/app/sample_data:rw" \
   -v "$PWD/exports:/app/exports:rw" \
   camac-signal-analyser:dev
 ```
 
-После закрытия приложения:
-
-```bash
-xhost -local:docker
-```
-
 ---
 
-## Linux: запуск из готового release archive
+# Частые ошибки на Windows 10
 
-Если вы скачали:
-
-```text
-camac-signal-analyser-dev.tar.gz
-```
-
-загрузите image:
+Неправильно:
 
 ```bash
-gunzip -c camac-signal-analyser-dev.tar.gz | docker load
+cd ~/camac_signal_analyser-main/python_gui
+python3 main.py
 ```
 
-Создайте папки:
+Правильно для обычного пользователя:
 
 ```bash
-mkdir -p sample_data exports
+cd ~/camac_signal_analyser-main
+docker build -t camac-signal-analyser:dev .
+docker run ...
 ```
 
-Положите архивы в:
-
-```text
-sample_data/
-```
-
-И запустите приложение обычной Linux-командой выше.
-
----
-
-# Запуск на macOS
-
-На macOS нужен Docker Desktop и XQuartz.
-
-GUI через XQuartz может работать медленнее, чем на Linux или Windows WSLg.
-
----
-
-## 1. Установить зависимости
-
-Нужно установить:
-
-```text
-Docker Desktop
-XQuartz
-```
-
-Запустите XQuartz:
+Неправильно:
 
 ```bash
-open -a XQuartz
-```
-
-В настройках XQuartz включите:
-
-```text
-Allow connections from network clients
-```
-
-После этого перезапустите XQuartz.
-
-Разрешите локальные X11 соединения:
-
-```bash
-xhost + 127.0.0.1
-```
-
----
-
-## 2. Сборка на macOS
-
-```bash
-git clone <YOUR_REPOSITORY_URL>
-cd camac_signal_analyser
-mkdir -p sample_data exports
+cd ~/camac_signal_analyser-main/python_gui
 docker build -t camac-signal-analyser:dev .
 ```
 
----
-
-## 3. Запуск на macOS
+Правильно:
 
 ```bash
-docker run --rm -it \
-  --name camac-gui \
-  -e DISPLAY=host.docker.internal:0 \
-  -e QT_X11_NO_MITSHM=1 \
-  -v "$PWD/sample_data:/app/sample_data:rw" \
-  -v "$PWD/exports:/app/exports:rw" \
-  camac-signal-analyser:dev
+cd ~/camac_signal_analyser-main
+docker build -t camac-signal-analyser:dev .
+```
+
+В правильной папке должны быть:
+
+```text
+Dockerfile
+requirements.txt
+python_gui
+cpp_core
+README.md
 ```
 
 ---
 
 # Использование приложения
-
-Основной workflow:
 
 ```text
 1. Положите CAMAC архивы в sample_data/.
@@ -1530,111 +1546,6 @@ docker run --rm -it \
 8. В Окне 4 можно строить вейвлет-скалограммы АЭ и ЭМЭ.
 9. В Окне 5 можно экспортировать CSV файлы.
 10. Экспорт сохраняйте в /app/exports.
-11. Файлы появятся на компьютере в папке exports/.
-```
-
----
-
-# Описание окон приложения
-
-## Окно 1: Обрезка и накопленная энергия
-
-Показывает накопленную энергию:
-
-```text
-АЭ / AE
-ЭМЭ / EME
-```
-
-Поддерживает:
-
-```text
-CUT по номеру импульса
-CUT по времени эксперимента
-RESET
-```
-
----
-
-## Окно 2: Поимпульсный анализ
-
-Показывает:
-
-```text
-форма сигнала АЭ
-форма сигнала ЭМЭ
-FFT АЭ
-FFT ЭМЭ
-сводная FFT по всем импульсам
-энергия текущего импульса
-мощность текущего импульса
-максимальная амплитуда
-RAW header preview
-удаление текущего импульса
-```
-
----
-
-## Окно 3: Статистические коэффициенты
-
-Показывает четыре графика:
-
-```text
-d-value
-S-value
-γ-value
-Tsallis q
-```
-
-Режимы:
-
-```text
-1 сигнал за раз:
-    d-value показывается как кривая по импульсам.
-    S-value, γ-value и Tsallis q показываются как значения для текущего диапазона.
-
-Скользящее окно:
-    d-value, S-value, γ-value и Tsallis q считаются по окнам импульсов.
-```
-
-Тяжелые расчеты выполняются в background worker thread, поэтому GUI должен оставаться отзывчивым.
-
----
-
-## Окно 4: Вейвлет-анализ
-
-Показывает две скалограммы одновременно:
-
-```text
-вейвлет-скалограмма АЭ
-вейвлет-скалограмма ЭМЭ
-```
-
-Режимы:
-
-```text
-Текущий импульс:
-    полная time-frequency скалограмма выбранного импульса.
-
-Все импульсы:
-    сводные вейвлет-карты по текущему диапазону архива.
-```
-
----
-
-## Окно 5: Экспорт
-
-Экспортирует:
-
-```text
-catalog CSV
-текущий обработанный импульс CSV
-текущий RAW импульс CSV
-текущий диапазон в папку
-матрицы обработанных сигналов AE и EME
-b-value CSV
-wavelet CSV
-изображения графиков через контекстное меню
 ```
 
 ---
@@ -1658,48 +1569,9 @@ sample_1,-125.38,-118.22,-110.05
 sample_2,84.51,79.33,76.18
 ```
 
-Значение:
-
-```text
-columns:
-    импульсы / сигналы
-
-first row:
-    подписи импульсов
-
-first column:
-    подписи строк
-
-experiment_time_seconds:
-    время от начала эксперимента / архива
-
-sample_0, sample_1, ...
-    значения обработанного сигнала
-```
-
-После CUT/delete:
-
-```text
-event_1_original_50
-```
-
-означает:
-
-```text
-event_1:
-    первый импульс в текущем обработанном диапазоне
-
-original_50:
-    исходный номер импульса в полном архиве
-```
-
 ---
 
-# Поддерживаемые форматы CAMAC
-
-Приложение автоматически определяет поддерживаемый формат CAMAC архива.
-
-Длина обработанного сигнала зависит от формата:
+# Поддерживаемые CAMAC форматы
 
 ```text
 Старый формат:
@@ -1717,21 +1589,19 @@ original_50:
         3072 raw samples - 4 timestamp samples = 3068 processed values
 ```
 
-В экспорт обработанных матриц CAMAC metadata/header samples не попадают.
-
 ---
 
 # Информация о GitHub Release archive
 
 Готовый Docker image распространяется как GitHub Release asset.
 
-Пример файла:
+Пример:
 
 ```text
 camac-signal-analyser-dev.tar.gz
 ```
 
-Этот файл **не нужно коммитить в Git**.
+Этот файл не нужно коммитить в Git.
 
 Его нужно загрузить сюда:
 
@@ -1739,64 +1609,29 @@ camac-signal-analyser-dev.tar.gz
 GitHub repository -> Releases -> latest release -> Assets
 ```
 
-Пользователи скачивают архив, загружают его в Docker и запускают приложение без самостоятельной сборки.
-
----
-
-## Загрузка release archive в Docker
+Загрузка в Docker:
 
 ```bash
 gunzip -c camac-signal-analyser-dev.tar.gz | docker load
 ```
 
-Проверить:
+Проверка:
 
 ```bash
 docker images
 ```
 
-Ожидаемый image:
-
-```text
-camac-signal-analyser   dev
-```
-
-После этого приложение запускается обычной командой для вашей ОС.
-
 ---
 
-# Инструкция для разработчика / maintainer
+# Инструкция для разработчика
 
-## Собрать Docker image
+Собрать image:
 
 ```bash
 docker build -t camac-signal-analyser:dev .
 ```
 
----
-
-## Проверить image на Linux
-
-```bash
-mkdir -p sample_data exports
-
-xhost +local:docker
-
-docker run --rm -it \
-  --name camac-gui \
-  -e DISPLAY="$DISPLAY" \
-  -e QT_X11_NO_MITSHM=1 \
-  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-  -v "$PWD/sample_data:/app/sample_data:rw" \
-  -v "$PWD/exports:/app/exports:rw" \
-  camac-signal-analyser:dev
-
-xhost -local:docker
-```
-
----
-
-## Сохранить image как compressed release archive
+Сохранить image:
 
 ```bash
 docker save camac-signal-analyser:dev | gzip -9 > camac-signal-analyser-dev.tar.gz
@@ -1808,279 +1643,36 @@ docker save camac-signal-analyser:dev | gzip -9 > camac-signal-analyser-dev.tar.
 
 ---
 
-## Рекомендуемый release workflow
-
-```text
-1. Сделать commit и push исходного кода.
-2. Собрать Docker image.
-3. Проверить Docker image локально.
-4. Сохранить image:
-       docker save camac-signal-analyser:dev | gzip -9 > camac-signal-analyser-dev.tar.gz
-5. Открыть GitHub repository.
-6. Открыть Releases.
-7. Draft a new release.
-8. Создать tag, например:
-       v1.0.0
-9. Загрузить:
-       camac-signal-analyser-dev.tar.gz
-10. Publish release.
-```
-
----
-
-# Локальный запуск без Docker
-
-На Ubuntu можно запускать приложение локально.
-
-Создать virtual environment:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-Собрать C++ parser:
-
-```bash
-cmake -S cpp_core -B cpp_core/build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -Dpybind11_DIR=$(python -m pybind11 --cmakedir)
-
-cmake --build cpp_core/build -j$(nproc)
-```
-
-Запустить GUI:
-
-```bash
-PYTHONPATH=python_gui:cpp_core/build python3 python_gui/main.py
-```
-
----
-
-# Полезные Docker команды
-
-Собрать image:
-
-```bash
-docker build -t camac-signal-analyser:dev .
-```
-
-Показать images:
-
-```bash
-docker images
-```
-
-Удалить image:
-
-```bash
-docker rmi camac-signal-analyser:dev
-```
-
-Запустить shell внутри image:
-
-```bash
-docker run --rm -it camac-signal-analyser:dev bash
-```
-
-Найти compiled CAMAC module внутри image:
-
-```bash
-docker run --rm -it camac-signal-analyser:dev bash
-find /app -name "camac_core*.so"
-```
-
-Сохранить image:
-
-```bash
-docker save camac-signal-analyser:dev | gzip -9 > camac-signal-analyser-dev.tar.gz
-```
-
-Загрузить image:
-
-```bash
-gunzip -c camac-signal-analyser-dev.tar.gz | docker load
-```
-
----
-
-# Troubleshooting / Решение проблем
-
-## Docker command says permission denied на Linux
-
-Можно запустить через `sudo`:
-
-```bash
-sudo docker build -t camac-signal-analyser:dev .
-```
-
-Или добавить пользователя в Docker group:
-
-```bash
-sudo usermod -aG docker "$USER"
-```
-
-После этого нужно выйти из системы и зайти снова.
-
----
-
-## GUI не открывается на Linux
-
-Проверьте:
-
-```bash
-echo $DISPLAY
-```
-
-Разрешите Docker доступ к X11:
-
-```bash
-xhost +local:docker
-```
-
-Запустите контейнер снова.
-
----
-
-## GUI не открывается на Windows
-
-В Ubuntu/WSL проверьте:
-
-```bash
-sudo apt update
-sudo apt install -y x11-apps
-xeyes
-```
-
-Если `xeyes` не открывается, проблема в WSLg/Windows GUI support, а не в CAMAC приложении.
-
----
-
-## GUI не открывается на macOS
-
-Убедитесь, что XQuartz запущен:
-
-```bash
-open -a XQuartz
-```
-
-Включите:
-
-```text
-Allow connections from network clients
-```
-
-Перезапустите XQuartz.
-
-Затем:
-
-```bash
-xhost + 127.0.0.1
-```
-
-Запустите Docker container снова.
-
----
-
-## Архив не виден в file picker
-
-Внутри Docker используйте:
-
-```text
-/app/sample_data
-```
-
-Не используйте обычный host path.
-
-Пример:
-
-```text
-Host:
-    ./sample_data/test.001
-
-Inside application:
-    /app/sample_data/test.001
-```
-
----
-
-## Экспортированные файлы не видны
-
-Экспортируйте внутри GUI в:
-
-```text
-/app/exports
-```
-
-Потом проверьте на host:
-
-```bash
-ls -lh exports
-```
-
----
-
-## Ошибка import camac_core
-
-Запустите shell внутри Docker image:
-
-```bash
-docker run --rm -it camac-signal-analyser:dev bash
-```
-
-Внутри контейнера:
-
-```bash
-find /app -name "camac_core*.so"
-python -c "import camac_core; print(camac_core)"
-```
-
-Если `camac_core*.so` существует, но import не работает, проверьте `PYTHONPATH` в Dockerfile.
-
----
-
-## Приложение работает медленно при тяжелых расчетах
-
-Некоторые операции тяжелые:
-
-```text
-Window 3 statistics
-Tsallis fitting
-wavelet analysis for all impulses
-large CSV exports
-```
-
-Рекомендация:
-
-```text
-Сначала используйте CUT, чтобы уменьшить текущий диапазон.
-Потом запускайте тяжелые расчеты на выбранном диапазоне.
-```
-
----
-
 # Примечания
 
 Это desktop GUI приложение, запущенное через Docker.
 
 Docker делает Python/C++ окружение воспроизводимым, но GUI forwarding зависит от операционной системы.
 
-Лучше всего поддерживается:
+Основная целевая платформа:
 
 ```text
-Linux / Ubuntu
+Windows 10
 ```
 
-Основной рекомендуемый вариант для пользователей:
+Лучший вариант для Windows 10:
 
 ```text
-Windows 11 + WSL2 + WSLg + Docker Desktop
+Windows 10 Build 19044+
+WSL2
+Ubuntu
+Docker Desktop
+WSLg
 ```
 
-Возможно на macOS:
+Fallback:
 
 ```text
-Docker Desktop + XQuartz
+VcXsrv
+```
+
+Более простой вариант при возможности:
+
+```text
+Windows 11 + WSLg
 ```
