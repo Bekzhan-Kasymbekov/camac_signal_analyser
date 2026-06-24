@@ -179,6 +179,257 @@ class FullAnalysisWindow(QMainWindow):
         self.toggle_ui_state(False)
 
     # ================= HELPERS =================
+    def get_default_export_dir(self) -> Path:
+        """
+        Возвращает папку exports в корне проекта.
+
+        Если папка exports недоступна, используется домашняя папка пользователя.
+        """
+        try:
+            project_root = Path(__file__).resolve().parents[2]
+            export_dir = project_root / "exports"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            return export_dir
+
+        except Exception as error:
+            fallback_dir = Path.home() / "camac_signal_analyser_exports"
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+
+            print(
+                "Warning: could not use project exports folder. "
+                f"Using fallback export folder: {fallback_dir}. "
+                f"Original error: {repr(error)}"
+            )
+
+            return fallback_dir
+
+    def get_current_event_filename_numbers(self) -> tuple[int, int]:
+        """
+        Returns:
+            event_number: current number in edited/current catalog, 1-based
+            original_event_number: original number in archive, 1-based
+        """
+        if self.num_pulses <= 0:
+            return 0, 0
+
+        event_number = int(self.current_index + 1)
+        original_event_number = int(self.get_original_event_number(self.current_index))
+
+        return event_number, original_event_number
+
+    def make_image_export_name(
+        self,
+        plot_type: str,
+        suffix: str = ".png",
+        scope: str = "range",
+    ) -> str:
+        """
+        Creates clean English image export filenames.
+
+        scope:
+            "single_event" -> archive_plot_type_event_N_original_M.png
+            "range"        -> archive_plot_type_range_A-B.png
+        """
+        archive_stem = self.get_archive_stem_for_filename()
+        plot_type = self.sanitize_filename_part(plot_type).lower()
+
+        if scope == "single_event":
+            event_number, original_event_number = self.get_current_event_filename_numbers()
+
+            return (
+                f"{archive_stem}_"
+                f"{plot_type}_"
+                f"event_{event_number}_"
+                f"original_{original_event_number}"
+                f"{suffix}"
+            )
+
+        range_label = self.get_current_range_label_for_filename()
+
+        return (
+            f"{archive_stem}_"
+            f"{plot_type}_"
+            f"{range_label}"
+            f"{suffix}"
+        )
+
+    def get_english_plot_export_info(self, plot_widget) -> tuple[str, str]:
+        """
+        Returns:
+            plot_type: clean English plot name
+            scope: "single_event" or "range"
+        """
+
+        if hasattr(self, "plot_widget1") and plot_widget is self.plot_widget1:
+            plot_type = self.combo_accumulation_plot_type.currentData()
+
+            if plot_type == "count_time":
+                return "signal_count_accumulation_time", "range"
+
+            if plot_type == "energy_time":
+                return "energy_accumulation_time", "range"
+
+            return "energy_accumulation_event_numbers", "range"
+
+        if hasattr(self, "pw_ae_time") and plot_widget is self.pw_ae_time:
+            return "ae_waveform", "single_event"
+
+        if hasattr(self, "pw_eme_time") and plot_widget is self.pw_eme_time:
+            return "eme_waveform", "single_event"
+
+        if hasattr(self, "pw_ae_fft") and plot_widget is self.pw_ae_fft:
+            return "ae_fft", "single_event"
+
+        if hasattr(self, "pw_eme_fft") and plot_widget is self.pw_eme_fft:
+            return "eme_fft", "single_event"
+
+        if hasattr(self, "pw_fft_summary") and plot_widget is self.pw_fft_summary:
+            return "fft_summary", "range"
+
+        if hasattr(self, "pw_d_value") and plot_widget is self.pw_d_value:
+            return "d_value", "range"
+
+        if hasattr(self, "pw_s_value") and plot_widget is self.pw_s_value:
+            return "s_value", "range"
+
+        if hasattr(self, "pw_gamma_value") and plot_widget is self.pw_gamma_value:
+            return "gamma_value", "range"
+
+        if hasattr(self, "pw_tsallis_q") and plot_widget is self.pw_tsallis_q:
+            return "tsallis_q", "range"
+
+        if hasattr(self, "pw_b_value") and plot_widget is self.pw_b_value:
+            return "b_value", "range"
+
+        if hasattr(self, "pw_wavelet_ae") and plot_widget is self.pw_wavelet_ae:
+            if getattr(self, "last_wavelet_results", {}).get("mode") == "current":
+                return "ae_wavelet", "single_event"
+            return "ae_wavelet", "range"
+
+        if hasattr(self, "pw_wavelet_eme") and plot_widget is self.pw_wavelet_eme:
+            if getattr(self, "last_wavelet_results", {}).get("mode") == "current":
+                return "eme_wavelet", "single_event"
+            return "eme_wavelet", "range"
+
+        return "plot", "range"
+
+    def sanitize_filename_part(self, text: str) -> str:
+        """
+        Делает безопасную часть имени файла.
+
+        Убирает символы, которые неудобны в Windows/Linux/macOS:
+        / \ : * ? " < > | и лишние пробелы.
+        """
+        text = str(text).strip()
+
+        replacements = {
+            "/": "_",
+            "\\": "_",
+            ":": "_",
+            "*": "_",
+            "?": "_",
+            '"': "",
+            "<": "_",
+            ">": "_",
+            "|": "_",
+            "\n": "_",
+            "\r": "_",
+            "\t": "_",
+        }
+
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+
+        text = "_".join(text.split())
+
+        while "__" in text:
+            text = text.replace("__", "_")
+
+        return text.strip("_") or "unnamed"
+
+    def get_archive_stem_for_filename(self) -> str:
+        """
+        Возвращает безопасное имя архива без расширения.
+        """
+        if not self.current_file_name or self.current_file_name == "Файл не выбран":
+            return "camac_archive"
+
+        return self.sanitize_filename_part(Path(self.current_file_name).stem)
+
+    def get_current_range_label_for_filename(self) -> str:
+        """
+        Возвращает подпись текущего диапазона по исходным номерам импульсов.
+
+        Пример:
+            range_1-1988
+            range_50-120
+        """
+        if self.num_pulses <= 0:
+            return "range_empty"
+
+        first_original = self.get_original_event_number(0)
+        last_original = self.get_original_event_number(self.num_pulses - 1)
+
+        return f"range_{first_original}-{last_original}"
+
+    def make_default_export_name(
+        self,
+        export_type: str,
+        suffix: str,
+        extra: str | None = None,
+    ) -> str:
+        """
+        Формирует стандартное имя файла экспорта.
+
+        Пример:
+            archive_range_50-120_processed_signal_matrix_AE.csv
+        """
+        archive_stem = self.get_archive_stem_for_filename()
+        range_label = self.get_current_range_label_for_filename()
+        export_type = self.sanitize_filename_part(export_type)
+
+        parts = [
+            archive_stem,
+            range_label,
+            export_type,
+        ]
+
+        if extra:
+            parts.append(self.sanitize_filename_part(extra))
+
+        return "_".join(parts) + suffix
+ 
+    def make_default_single_event_export_name(
+        self,
+        export_type: str,
+        suffix: str,
+        event_number: int,
+        original_event_number: int,
+    ) -> str:
+        """
+        Формирует имя файла для экспорта одного импульса.
+
+        В отличие от экспорта диапазона, здесь не нужен range_...
+        Достаточно:
+        - имя исходного архива;
+        - тип экспорта;
+        - текущий номер импульса;
+        - исходный номер импульса.
+
+        Пример:
+            190723_processed_event_7_original_56.csv
+            190723_raw_event_7_original_56.csv
+        """
+        archive_stem = self.get_archive_stem_for_filename()
+        export_type = self.sanitize_filename_part(export_type)
+
+        return (
+            f"{archive_stem}_"
+            f"{export_type}_"
+            f"event_{event_number}_"
+            f"original_{original_event_number}"
+            f"{suffix}"
+        )
 
     def update_file_status_label(self) -> None:
         if not self.file_loaded:
@@ -246,10 +497,18 @@ class FullAnalysisWindow(QMainWindow):
             )
             return
 
+        plot_type, scope = self.get_english_plot_export_info(plot_widget)
+
+        default_name = self.make_image_export_name(
+            plot_type=plot_type,
+            suffix=".png",
+            scope=scope,
+        )
+
         file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Сохранить график как изображение",
-            str(Path.home() / "camac_graph.png"),
+            str(self.get_default_export_dir() / default_name),
             (
                 "PNG image (*.png);;"
                 "JPEG image (*.jpg);;"
@@ -329,7 +588,7 @@ class FullAnalysisWindow(QMainWindow):
         self.input_min.setEnabled(enabled)
         self.btn_cut.setEnabled(enabled)
         self.btn_reset.setEnabled(enabled)
-        self.combo_accumulation_x_axis.setEnabled(enabled)
+        self.combo_accumulation_plot_type.setEnabled(enabled)
 
         self.spin_pulse.setEnabled(enabled)
         self.btn_delete.setEnabled(enabled)
@@ -444,12 +703,27 @@ class FullAnalysisWindow(QMainWindow):
         )
 
         return float(total_ae_energy), float(total_eme_energy)
+ 
+    def get_accumulation_x_axis_mode(self) -> str:
+        """
+        Возвращает режим оси X для окна 1.
 
-    def on_accumulation_x_axis_changed(self) -> None:
+        count_time   -> время
+        energy_time  -> время
+        energy_number -> номер импульса
+        """
+        plot_type = self.combo_accumulation_plot_type.currentData()
+
+        if plot_type in ["count_time", "energy_time"]:
+            return "relative_time"
+
+        return "event_number"
+
+    def on_accumulation_plot_type_changed(self) -> None:
         if not self.file_loaded:
             return
 
-        x_axis_mode = self.combo_accumulation_x_axis.currentData()
+        x_axis_mode = self.get_accumulation_x_axis_mode()
 
         self.line_min.blockSignals(True)
         self.line_max.blockSignals(True)
@@ -527,7 +801,7 @@ class FullAnalysisWindow(QMainWindow):
 
         self.lbl_total.setText(f"Всего импульсов: {self.num_pulses}")
 
-        if self.combo_accumulation_x_axis.currentData() == "relative_time":
+        if self.get_accumulation_x_axis_mode() == "relative_time":
             self.line_min.setPos(float(self.relative_seconds[0]))
             self.line_max.setPos(float(self.relative_seconds[-1]))
 
@@ -607,16 +881,30 @@ class FullAnalysisWindow(QMainWindow):
         left_panel.addWidget(self.btn_browse)
 
         left_panel.addSpacing(10)
-        left_panel.addWidget(QLabel("<b>Ось X графика / режим обрезки:</b>"))
+        left_panel.addWidget(QLabel("<b>Тип графика / режим обрезки:</b>"))
 
-        self.combo_accumulation_x_axis = QComboBox()
-        self.combo_accumulation_x_axis.addItem("По номеру импульса", "event_number")
-        self.combo_accumulation_x_axis.addItem("По времени архива, с", "relative_time")
-        self.combo_accumulation_x_axis.currentIndexChanged.connect(
-            self.on_accumulation_x_axis_changed
+        self.combo_accumulation_plot_type = QComboBox()
+
+        self.combo_accumulation_plot_type.addItem(
+            "Накопление количества импульсов во времени",
+            "count_time",
         )
 
-        left_panel.addWidget(self.combo_accumulation_x_axis)
+        self.combo_accumulation_plot_type.addItem(
+            "Накопление энергии АЭ/ЭМЭ во времени",
+            "energy_time",
+        )
+
+        self.combo_accumulation_plot_type.addItem(
+            "Накопление энергии АЭ/ЭМЭ по номерам импульсов",
+            "energy_number",
+        )
+
+        self.combo_accumulation_plot_type.currentIndexChanged.connect(
+            self.on_accumulation_plot_type_changed
+        )
+
+        left_panel.addWidget(self.combo_accumulation_plot_type)
 
         left_panel.addWidget(QLabel("<b>Левая граница обрезки:</b>"))
         self.btn_min = QPushButton("Min")
@@ -716,8 +1004,8 @@ class FullAnalysisWindow(QMainWindow):
         self.pw_ae_fft.setLabel("bottom", "Частота", units="Hz")
         self.pw_eme_fft.setLabel("bottom", "Частота", units="Hz")
 
-        self.pw_ae_time.setLabel("left", "AE")
-        self.pw_eme_time.setLabel("left", "EME")
+        self.pw_ae_time.setLabel("left", "Амплитуда")
+        self.pw_eme_time.setLabel("left", "Амплитуда")
         self.pw_ae_fft.setLabel("left", "Амплитуда")
         self.pw_eme_fft.setLabel("left", "Амплитуда")
 
@@ -1116,7 +1404,7 @@ class FullAnalysisWindow(QMainWindow):
             )
         )
 
-        btn_save_catalog = QPushButton("Экспортировать каталог в CSV...")
+        btn_save_catalog = QPushButton("Экспортировать каталог текущего диапазона в CSV...")
         btn_save_catalog.setMinimumHeight(40)
         btn_save_catalog.clicked.connect(self.export_current_catalog)
         layout_data.addWidget(btn_save_catalog)
@@ -1131,13 +1419,13 @@ class FullAnalysisWindow(QMainWindow):
         btn_save_current_event_raw.clicked.connect(self.export_current_event_raw)
         layout_data.addWidget(btn_save_current_event_raw)
 
-        btn_export_range_folder = QPushButton("Экспортировать текущий диапазон в папку...")
+        btn_export_range_folder = QPushButton("Экспортировать текущий диапазон отдельными файлами в папку...")
         btn_export_range_folder.setMinimumHeight(40)
         btn_export_range_folder.clicked.connect(self.export_current_range_folder)
         layout_data.addWidget(btn_export_range_folder)
 
         btn_export_signal_matrices = QPushButton(
-            "Экспортировать обработанные сигналы АЭ/ЭМЭ в CSV..."
+            "Экспортировать матрицу обработанных сигналов АЭ/ЭМЭ в CSV..."
         )
         btn_export_signal_matrices.setMinimumHeight(40)
         btn_export_signal_matrices.clicked.connect(
@@ -1169,8 +1457,10 @@ class FullAnalysisWindow(QMainWindow):
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить каталог",
-            str(Path.home() / "camac_catalog.csv"),
-            "CSV files (*.csv);;Text files (*.txt);;All files (*.*)",
+            str(
+                self.get_default_export_dir() 
+                / self.make_default_export_name("catalog_summary", ".csv")
+            )
         )
 
         if not file_path:
@@ -1252,12 +1542,17 @@ class FullAnalysisWindow(QMainWindow):
         event_number = event_index + 1
         original_event_number = self.get_original_event_number(event_index)
 
-        default_name = f"event_{event_number}_original_{original_event_number}.csv"
+        default_name = self.make_default_single_event_export_name(
+            "processed",
+            ".csv",
+            event_number,
+            original_event_number,
+        )
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить текущий импульс",
-            str(Path.home() / default_name),
+            str(self.get_default_export_dir() / default_name),
             "CSV files (*.csv);;Text files (*.txt);;All files (*.*)",
         )
 
@@ -1333,14 +1628,17 @@ class FullAnalysisWindow(QMainWindow):
         original_event_number = self.get_original_event_number(event_index)
         original_event_index = self.get_original_event_index(event_index)
 
-        default_name = (
-            f"event_{event_number}_original_{original_event_number}_raw.csv"
+        default_name = self.make_default_single_event_export_name(
+            "raw",
+            ".csv",
+            event_number,
+            original_event_number,
         )
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить RAW данные текущего импульса",
-            str(Path.home() / default_name),
+            str(self.get_default_export_dir() / default_name),
             "CSV files (*.csv);;Text files (*.txt);;All files (*.*)",
         )
 
@@ -1430,7 +1728,7 @@ class FullAnalysisWindow(QMainWindow):
         folder_path = QFileDialog.getExistingDirectory(
             self,
             "Выберите папку для экспорта текущего диапазона",
-            str(Path.home()),
+            str(self.get_default_export_dir()),
         )
 
         if not folder_path:
@@ -1438,11 +1736,19 @@ class FullAnalysisWindow(QMainWindow):
 
         output_folder = Path(folder_path)
 
-        export_folder = output_folder / f"camac_export_{self.current_file_name}"
+        export_folder_name = self.make_default_export_name(
+            "full_range_export",
+            "",
+        )
+
+        export_folder = output_folder / export_folder_name
         export_folder.mkdir(parents=True, exist_ok=True)
 
         try:
-            catalog_path = export_folder / "archive_catalog.csv"
+            catalog_path = export_folder / self.make_default_export_name(
+                "catalog_summary",
+                ".csv",
+            )
 
             original_event_numbers = [
                 self.get_original_event_number(i)
@@ -1468,11 +1774,19 @@ class FullAnalysisWindow(QMainWindow):
 
                 processed_path = (
                     export_folder
-                    / f"event_{event_number}_original_{original_event_number}_signal.csv"
+                    / self.make_default_export_name(
+                        "processed_event_signal",
+                        ".csv",
+                        f"event_{event_number}_original_{original_event_number}",
+                    )
                 )
                 raw_path = (
                     export_folder
-                    / f"event_{event_number}_original_{original_event_number}_raw.csv"
+                    / self.make_default_export_name(
+                        "raw_event_signal",
+                        ".csv",
+                        f"event_{event_number}_original_{original_event_number}",
+                    )
                 )
 
                 write_processed_event_csv(
@@ -1526,8 +1840,8 @@ class FullAnalysisWindow(QMainWindow):
         """
         Экспортирует текущий обработанный каталог сигналов в два CSV файла:
 
-        1. processed_AE_signals.csv
-        2. processed_EME_signals.csv
+        1. <archive>_<range>_processed_signal_matrix_AE.csv
+        2. <archive>_<range>_processed_signal_matrix_EME.csv
 
         Формат каждого файла:
             - столбцы = импульсы текущего диапазона;
@@ -1556,7 +1870,7 @@ class FullAnalysisWindow(QMainWindow):
         folder_path = QFileDialog.getExistingDirectory(
             self,
             "Выберите папку для экспорта обработанных сигналов",
-            str(Path.home()),
+            str(self.get_default_export_dir()),
         )
 
         if not folder_path:
@@ -1564,10 +1878,17 @@ class FullAnalysisWindow(QMainWindow):
 
         output_folder = Path(folder_path)
 
-        file_stem = Path(self.current_file_name).stem
+        ae_output_path = output_folder / self.make_default_export_name(
+            "processed_signal_matrix",
+            ".csv",
+            "AE",
+        )
 
-        ae_output_path = output_folder / f"{file_stem}_processed_AE_signals.csv"
-        eme_output_path = output_folder / f"{file_stem}_processed_EME_signals.csv"
+        eme_output_path = output_folder / self.make_default_export_name(
+            "processed_signal_matrix",
+            ".csv",
+            "EME",
+        )
 
         event_times_seconds = self.get_current_archive_time_values()
 
@@ -1712,7 +2033,10 @@ class FullAnalysisWindow(QMainWindow):
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить b-value CSV",
-            str(Path.home() / "b_value_results.csv"),
+            str(
+                self.get_default_export_dir()
+                / self.make_default_export_name("b_value_AE_EME", ".csv")
+            ),
             "CSV files (*.csv);;Text files (*.txt);;All files (*.*)",
         )
 
@@ -1775,10 +2099,30 @@ class FullAnalysisWindow(QMainWindow):
             )
             return
 
+        mode = self.last_wavelet_results.get("mode", "unknown")
+
+        if mode == "current":
+            event_number = self.last_wavelet_results.get("event_number", "")
+            original_event_number = self.last_wavelet_results.get(
+                "original_event_number",
+                "",
+            )
+            extra = f"current_event_{event_number}_original_{original_event_number}"
+        elif mode == "all_events":
+            extra = "all_events_AE_EME"
+        else:
+            extra = "AE_EME"
+
+        default_name = self.make_default_export_name(
+            "wavelet_AE_EME",
+            ".csv",
+            extra,
+        )
+
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить вейвлеты CSV",
-            str(Path.home() / "wavelet_results_ae_eme.csv"),
+            str(self.get_default_export_dir() / default_name),
             "CSV files (*.csv);;Text files (*.txt);;All files (*.*)",
         )
 
@@ -2006,7 +2350,7 @@ class FullAnalysisWindow(QMainWindow):
 
         self.lbl_total.setText(f"Всего импульсов: {self.num_pulses}")
 
-        self.on_accumulation_x_axis_changed()
+        self.on_accumulation_plot_type_changed()
 
         self.load_pulse(1)
         self.clear_statistics_plots()
@@ -2192,7 +2536,7 @@ class FullAnalysisWindow(QMainWindow):
 
         self.lbl_total.setText(f"Всего импульсов: {self.num_pulses}")
 
-        self.on_accumulation_x_axis_changed()
+        self.on_accumulation_plot_type_changed()
 
         self.load_pulse(next_event_number)
         self.clear_statistics_plots()
@@ -2240,13 +2584,12 @@ class FullAnalysisWindow(QMainWindow):
 
     def update_accumulation_plot(self) -> None:
         """
-        Обновляет график накопленной энергии для текущего рабочего диапазона.
+        Обновляет график накопления в окне 1.
 
-        В одном графическом окне отображаются две кривые:
-        - накопленная энергия АЭ;
-        - накопленная энергия ЭМЭ.
-
-        После CUT/delete используются только оставшиеся импульсы.
+        Режимы:
+        1. Накопление количества импульсов во времени.
+        2. Накопление энергии АЭ/ЭМЭ во времени.
+        3. Накопление энергии АЭ/ЭМЭ по номерам импульсов.
         """
         self.plot_widget1.clear()
 
@@ -2256,21 +2599,8 @@ class FullAnalysisWindow(QMainWindow):
             return
 
         event_numbers = self.get_event_numbers()
-
-        ae_energy = np.array(
-            [calculate_energy(signal) for signal in self.ae_data],
-            dtype=float,
-        )
-
-        eme_energy = np.array(
-            [calculate_energy(signal) for signal in self.eme_data],
-            dtype=float,
-        )
-
-        cumulative_ae_energy = np.cumsum(ae_energy)
-        cumulative_eme_energy = np.cumsum(eme_energy)
-
-        x_axis_mode = self.combo_accumulation_x_axis.currentData()
+        plot_type = self.combo_accumulation_plot_type.currentData()
+        x_axis_mode = self.get_accumulation_x_axis_mode()
 
         if (
             x_axis_mode == "relative_time"
@@ -2282,19 +2612,59 @@ class FullAnalysisWindow(QMainWindow):
             x_values = event_numbers
             self.plot_widget1.setLabel("bottom", "Номер импульса")
 
-        self.plot_widget1.plot(
-            x_values,
-            cumulative_ae_energy,
-            pen=pg.mkPen("b", width=2.5),
-            name="АЭ",
-        )
+        if plot_type == "count_time":
+            cumulative_count = np.arange(1, self.num_pulses + 1, dtype=int)
 
-        self.plot_widget1.plot(
-            x_values,
-            cumulative_eme_energy,
-            pen=pg.mkPen("r", width=2.5),
-            name="ЭМЭ",
-        )
+            self.plot_widget1.setTitle(
+                "Окно 1: Накопление количества импульсов во времени"
+            )
+            self.plot_widget1.setLabel("left", "Количество импульсов")
+
+            self.plot_widget1.plot(
+                x_values,
+                cumulative_count,
+                pen=pg.mkPen("k", width=2.5),
+                name="Количество импульсов",
+            )
+
+        else:
+            ae_energy = np.array(
+                [calculate_energy(signal) for signal in self.ae_data],
+                dtype=float,
+            )
+
+            eme_energy = np.array(
+                [calculate_energy(signal) for signal in self.eme_data],
+                dtype=float,
+            )
+
+            cumulative_ae_energy = np.cumsum(ae_energy)
+            cumulative_eme_energy = np.cumsum(eme_energy)
+
+            if plot_type == "energy_time":
+                self.plot_widget1.setTitle(
+                    "Окно 1: Накопление энергии АЭ и ЭМЭ во времени"
+                )
+            else:
+                self.plot_widget1.setTitle(
+                    "Окно 1: Накопление энергии АЭ и ЭМЭ по номерам импульсов"
+                )
+
+            self.plot_widget1.setLabel("left", "Накопленная энергия")
+
+            self.plot_widget1.plot(
+                x_values,
+                cumulative_ae_energy,
+                pen=pg.mkPen("b", width=2.5),
+                name="АЭ",
+            )
+
+            self.plot_widget1.plot(
+                x_values,
+                cumulative_eme_energy,
+                pen=pg.mkPen("r", width=2.5),
+                name="ЭМЭ",
+            )
 
         self.plot_widget1.addItem(self.line_min)
         self.plot_widget1.addItem(self.line_max)
@@ -2311,7 +2681,7 @@ class FullAnalysisWindow(QMainWindow):
         if not self.file_loaded:
             return
 
-        x_axis_mode = self.combo_accumulation_x_axis.currentData()
+        x_axis_mode = self.get_accumulation_x_axis_mode()
 
         if x_axis_mode == "relative_time":
             min_value_allowed = float(self.relative_seconds[0])
@@ -2375,7 +2745,7 @@ class FullAnalysisWindow(QMainWindow):
         if not self.file_loaded:
             return
 
-        x_axis_mode = self.combo_accumulation_x_axis.currentData()
+        x_axis_mode = self.get_accumulation_x_axis_mode()
 
         if x_axis_mode == "relative_time":
             if len(self.relative_seconds) == 0:
@@ -2426,7 +2796,7 @@ class FullAnalysisWindow(QMainWindow):
         if not self.file_loaded:
             return
 
-        x_axis_mode = self.combo_accumulation_x_axis.currentData()
+        x_axis_mode = self.get_accumulation_x_axis_mode()
 
         if x_axis_mode == "relative_time":
             self.cut_data_by_time()
@@ -2534,7 +2904,7 @@ class FullAnalysisWindow(QMainWindow):
         self.line_min.setPos(1)
         self.line_max.setPos(self.num_pulses)
 
-        if self.combo_accumulation_x_axis.currentData() == "relative_time":
+        if self.get_accumulation_x_axis_mode() == "relative_time":
             self.line_min.setPos(float(self.relative_seconds[0]))
             self.line_max.setPos(float(self.relative_seconds[-1]))
 
